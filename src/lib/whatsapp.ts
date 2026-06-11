@@ -29,6 +29,22 @@ export function sendText(to: string, body: string) {
   return send({ to, type: 'text', text: { body, preview_url: false } });
 }
 
+// Sends an approved template message — the only way to reach a user OUTSIDE the
+// 24h customer-service window (used by the daily alerts cron at 6 AM).
+export function sendTemplate(to: string, name: string, lang: string, bodyParams: string[]) {
+  return send({
+    to,
+    type: 'template',
+    template: {
+      name,
+      language: { code: lang },
+      components: bodyParams.length
+        ? [{ type: 'body', parameters: bodyParams.map((text) => ({ type: 'text', text })) }]
+        : [],
+    },
+  });
+}
+
 export type Button = { id: string; title: string };
 
 export function sendButtons(to: string, body: string, buttons: Button[]) {

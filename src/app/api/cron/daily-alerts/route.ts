@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
-import { sendText } from '@/lib/whatsapp';
+import { sendText, sendTemplate } from '@/lib/whatsapp';
 import { getProximas, getRetiros, getPrenezPendientes, today, shift, PRENEZ_DIAS } from '@/lib/alerts';
+
+// Approved WhatsApp template for the daily summary (delivers outside the 24h window).
+const ALERT_TEMPLATE = process.env.WHATSAPP_ALERT_TEMPLATE || 'alerta_diaria_finca';
+const ALERT_TEMPLATE_LANG = process.env.WHATSAPP_ALERT_TEMPLATE_LANG || 'es';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -70,14 +74,26 @@ export async function GET(req: NextRequest) {
     .eq('activo', true);
 
   const destinatarios = (duenos || []).map((u: any) => u.telefono);
-  const envios = await Promise.all(destinatarios.map((to: string) => sendText(to, mensaje)));
-  const enviados = envios.filter(Boolean).length;
+
+  // Prefer the approved template (works at 6 AM, outside the 24h window).
+  // Fall back to free-form text (only delivers if within the 24h window) when the
+  // template isn't approved yet, so we still get the full detail during testing.
+  const params = [hoy, String(prox.length), String(retiros.length), String(prenez.length)];
+  let viaTemplate = 0;
+  let viaTexto = 0;
+  for (const to of destinatarios) {
+    const okT = await sendTemplate(to, ALERT_TEMPLATE, ALERT_TEMPLATE_LANG, params);
+    if (okT) { viaTemplate++; continue; }
+    if (await sendText(to, mensaje)) viaTexto++;
+  }
 
   return NextResponse.json({
     ok: true,
     fecha: hoy,
     total_alertas: totalAlertas,
     destinatarios: destinatarios.length,
-    enviados,
+    enviados: viaTemplate + viaTexto,
+    via_template: viaTemplate,
+    via_texto: viaTexto,
   });
 }
