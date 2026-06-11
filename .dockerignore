@@ -1,0 +1,11 @@
+node_modules
+.next
+out
+npm-debug.log
+.env*.local
+.env
+*.tsbuildinfo
+next-env.d.ts
+.git
+.DS_Store
+db
