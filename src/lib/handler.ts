@@ -62,6 +62,7 @@ async function showMenu(to: string): Promise<void> {
       {
         title: '📋 Registros',
         rows: [
+          { id: 'menu:animal', title: '🏷️ Registrar animal' },
           { id: 'menu:salud', title: '🩺 Salud / Tratam.' },
           { id: 'menu:reproduccion', title: '🍼 Reproducción' },
           { id: 'menu:pesaje', title: '⚖️ Pesaje' },
@@ -88,6 +89,11 @@ async function startMenuItem(to: string, key: string, session: Session): Promise
       { id: 'salud:tratamiento', title: '🔴 Tratamiento' },
       { id: 'salud:desparasitacion', title: '🪱 Desparasitar' },
     ]);
+    return;
+  }
+  if (key === 'animal') {
+    await saveSession({ ...session, current_flow: 'animal', current_step: 1, temp_data: {} });
+    await sendText(to, '🏷️ *Registrar / categorizar animal*\nEscribe el número de arete: (ej. 045)');
     return;
   }
   if (key === 'pesaje') {
@@ -163,6 +169,11 @@ async function dispatch(inc: Incoming, session: Session): Promise<void> {
   // ---- Salud: desparasitación (4 pasos) ----
   if (session.current_flow === 'salud.desparasitacion') {
     return desparasitacion(inc, session);
+  }
+
+  // ---- Registrar / categorizar animal ----
+  if (session.current_flow === 'animal') {
+    return registrarAnimal(inc, session);
   }
 
   // ---- Pesaje (5 pasos) ----
@@ -339,6 +350,124 @@ async function findOrCreateAnimal(arete: string, origen: string): Promise<string
     .select('id')
     .single();
   return nuevo?.id;
+}
+
+// Animal categories (dual-purpose cattle lifecycle stages).
+const CATEGORIAS: { id: string; title: string }[] = [
+  { id: 'ternero', title: '🐄 Ternero(a)' },
+  { id: 'levante', title: '🐂 Levante' },
+  { id: 'ceba', title: '🥩 Ceba' },
+  { id: 'novilla', title: '🐄 Novilla' },
+  { id: 'vaca', title: '🐄 Vaca' },
+  { id: 'vaca_seca', title: '🌵 Vaca seca' },
+  { id: 'toro', title: '🐂 Toro' },
+];
+const catTitle = (id: string) => CATEGORIAS.find((c) => c.id === id)?.title || id;
+
+// =====================================================================
+// Flow: Registrar / categorizar animal
+// step 1: arete -> step 2: categoría (list)
+//   - existing animal: -> confirm (only updates categoría)
+//   - new animal:      -> step 3: sexo (buttons) -> step 4: raza (list) -> confirm
+// step 5: confirm -> upsert
+// =====================================================================
+async function registrarAnimal(inc: Incoming, session: Session): Promise<void> {
+  const to = inc.from;
+  const input = (inc.id || inc.text || '').trim();
+  const t = session.temp_data;
+
+  // Step 1: arete
+  if (session.current_step === 1 && inc.kind === 'text') {
+    const arete = (inc.text || '').trim();
+    if (!validArete(arete)) return void sendText(to, '❓ Arete inválido. Escribe solo el número/código (ej. 045).');
+    const animal = await findAnimal(arete);
+    t.arete = arete;
+    t.nuevo = !animal;
+    if (animal) t.animalId = animal.id;
+    await saveSession({ ...session, current_step: 2, temp_data: t });
+    const encabezado = animal
+      ? `🏷️ Arete *${arete}* (existente) — ¿Nueva categoría?`
+      : `🏷️ Arete *${arete}* (nuevo) — ¿Categoría?`;
+    return void sendList(to, encabezado, 'Elegir categoría', [
+      { title: 'Categoría', rows: CATEGORIAS.map((c) => ({ id: `cat:${c.id}`, title: c.title })) },
+    ]);
+  }
+
+  // Step 2: categoría
+  if (session.current_step === 2 && input.startsWith('cat:')) {
+    t.categoria = input.slice(4);
+    if (t.nuevo) {
+      await saveSession({ ...session, current_step: 3, temp_data: t });
+      return void sendButtons(to, `🆕 Arete ${t.arete} — ¿Sexo?`, [
+        { id: 'sexo:H', title: '🐄 Hembra' },
+        { id: 'sexo:M', title: '🐂 Macho' },
+      ]);
+    }
+    return confirmarAnimal(to, session, t);
+  }
+
+  // Step 3: sexo (solo nuevos)
+  if (session.current_step === 3 && input.startsWith('sexo:')) {
+    t.sexo = input.slice(5);
+    const razas = await getCatalog('cat_razas');
+    await saveSession({ ...session, current_step: 4, temp_data: t });
+    return void sendList(to, '🧬 ¿Raza? (o omitir)', 'Elegir / Omitir', [
+      {
+        title: 'Raza',
+        rows: [...razas.map((r: any) => ({ id: `raza:${r.nombre}`, title: r.nombre })), { id: 'raza:skip', title: '➡️ Omitir' }],
+      },
+    ]);
+  }
+
+  // Step 4: raza (solo nuevos)
+  if (session.current_step === 4 && input.startsWith('raza:')) {
+    const v = input.slice(5);
+    t.raza = v === 'skip' ? null : v;
+    return confirmarAnimal(to, session, t);
+  }
+
+  // Step 5: confirmación
+  if (session.current_step === 5) {
+    if (input === 'conf:si') {
+      if (t.nuevo) {
+        await supabase.from('animales').insert({
+          arete: t.arete, sexo: t.sexo, raza: t.raza ?? null, categoria: t.categoria,
+          notas: 'Registrado por WhatsApp',
+        });
+      } else {
+        await supabase.from('animales').update({ categoria: t.categoria }).eq('id', t.animalId);
+      }
+      await clearSession(to);
+      const accion = t.nuevo ? 'registrado' : 'actualizado';
+      return void sendText(
+        to,
+        `✅ Animal ${accion}\n🐄 Arete ${t.arete} — ${catTitle(t.categoria)}${t.nuevo ? `\nSexo: ${t.sexo === 'H' ? 'Hembra' : 'Macho'}${t.raza ? ` · Raza: ${t.raza}` : ''}` : ''}\n\nEscribe *menú* para otro registro.`,
+      );
+    }
+    if (input === 'conf:no') {
+      await clearSession(to);
+      return void sendText(to, '❌ Cancelado. No se guardó nada.\nEscribe *menú*.');
+    }
+    return;
+  }
+
+  await clearSession(to);
+  return void sendText(to, '⚠️ Se perdió el hilo. Escribe *menú* para reiniciar.');
+}
+
+async function confirmarAnimal(to: string, session: Session, t: Record<string, any>): Promise<void> {
+  await saveSession({ ...session, current_step: 5, temp_data: t });
+  const extra = t.nuevo
+    ? `\n🆕 Nuevo · Sexo: ${t.sexo === 'H' ? 'Hembra' : 'Macho'}${t.raza ? ` · Raza: ${t.raza}` : ''}`
+    : '\n♻️ Existente (solo cambia categoría)';
+  return void sendButtons(
+    to,
+    `✅ *Confirmar*\n━━━━━━━━━━━━━━━\n🐄 Arete: ${t.arete}\n🏷️ Categoría: ${catTitle(t.categoria)}${extra}\n━━━━━━━━━━━━━━━`,
+    [
+      { id: 'conf:si', title: '✅ Confirmar' },
+      { id: 'conf:no', title: '❌ Cancelar' },
+    ],
+  );
 }
 
 // =====================================================================
