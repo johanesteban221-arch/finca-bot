@@ -52,9 +52,9 @@ are relative to it.**
 **`finca-bot/` (Next.js) is the source of truth.** The bifurcation between finca-bot and
 n8n is resolved:
 - `WF-00`, `WF-01` — **active**, maintained in n8n
-- `WF-02`, `WF-03` — **superseded** by the app's cron endpoints. ⚠️ The JSON files still
-  exist in `workflows/` and that folder has no version control — do not delete them without
-  asking; deletion is irreversible. Deactivate in n8n instead.
+- `WF-02`, `WF-03` — **superseded** by the app's cron endpoints. The JSON files still exist
+  in `workflows/` (now version-controlled) — do not delete them without asking. Deactivate
+  in n8n instead.
 - `docs/README-ganaderia.md` — still describes the n8n path as primary and never mentions
   `finca-bot`. Needs a rewrite (pending).
 
@@ -82,6 +82,7 @@ via `/api/hardware/milk-record` with `X-Device-Key` header auth.
 - `src/app/api/whatsapp/webhook/route.ts` — Meta webhook (GET verify + POST).
 - `src/app/api/cron/daily-alerts/route.ts`, `.../cron/backup/route.ts` — guarded by `CRON_SECRET`.
 - `src/middleware.ts` — Basic Auth on `/dashboard`; fail-closed (503 if password missing). Keep it that way.
+- `src/lib/tenant.ts` — `FINCA_ID` constant (Phase 0 single tenant). Every INSERT must pass it.
 
 ### Bot file structure — ✅ done (handler.ts refactor)
 ```
@@ -106,18 +107,28 @@ write the module, then register it in `handler.ts`'s `MENU_FLOWS` + `FLOWS`.
 
 ---
 
-## Multi-tenant architecture — 🎯 TARGET, NOT BUILT (CRITICAL, do not skip)
+## Multi-tenant architecture — ✅ MOSTLY BUILT (CRITICAL, do not skip)
 
-> **Status: none of this exists in the live schema yet.** No `fincas` table, no `finca_id`
-> column on any table, no RLS enabled anywhere, no `whatsapp_user_fincas`. The real
-> `whatsapp_users` today is `(telefono PK, nombre, rol, activo)` — a flat single-tenant
-> shape, not the N:M below. The SQL in this section is the **decided design to implement**
-> (pending task #2), not a description of the database.
+> **Status: applied via `db/02_multitenant.sql` (task #2, done).** The `fincas` table
+> exists with one row (the founder's farm, fixed id
+> `00000000-0000-0000-0000-000000000001`), every data table and catalog has `finca_id`,
+> and RLS is enabled on all of them.
+>
+> ⚠️ **RLS is enabled but DORMANT.** The app connects with the Supabase `service_role`
+> key, which bypasses RLS entirely. The `tenant_isolation` policies neither protect nor
+> break anything today. Phase 0 isolation comes from the app being single-tenant, not
+> from RLS. Do not read "RLS enabled" as "tenant isolation enforced" — that only becomes
+> true in Phase 1, via a JWT-scoped connection or a per-request
+> `set_config('app.finca_id', …)`.
+>
+> **Still 🎯 (deliberately deferred, see the bottom of `db/02_multitenant.sql`):** the
+> `whatsapp_users` N:M rework (§4 below) and `whatsapp_sessions.finca_id`. Real
+> `whatsapp_users` today is still `(telefono PK, nombre, rol, activo)`.
 
 These decisions are made now even though there is only one tenant (Phase 0). Changing them
 later means rewriting schema + all queries + all RLS policies.
 
-### 1. `fincas` table as system root
+### 1. `fincas` table as system root — ✅ built
 ```sql
 CREATE TABLE IF NOT EXISTS fincas (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -130,23 +141,32 @@ CREATE TABLE IF NOT EXISTS fincas (
 -- Phase 0: one row only (the founder's farm)
 ```
 
-### 2. `finca_id` on every data table
-All tables — `animales`, `eventos_sanitarios`, `pesajes`, `eventos_reproductivos`,
-`produccion_leche`, `movimientos`, `confirmaciones_pendientes` — must have:
+### 2. `finca_id` on every data table — ✅ built
+All 7 data tables — `animales`, `eventos_sanitarios`, `pesajes`, `eventos_reproductivos`,
+`produccion_leche`, `movimientos`, `confirmaciones_pendientes` — have:
 ```sql
-finca_id UUID NOT NULL REFERENCES fincas(id)
+finca_id UUID NOT NULL REFERENCES fincas(id) DEFAULT '00000000-…-0001'
 ```
+The column DEFAULT is a Phase 0 safety net only. **The app does not rely on it:** every
+INSERT names `finca_id` explicitly via `FINCA_ID` from `src/lib/tenant.ts`. Keep it that
+way — Phase 1 drops the default and the explicit writes are what will survive.
 
-### 3. Supabase RLS by `finca_id` from day 1
+### 3. Supabase RLS by `finca_id` from day 1 — ✅ enabled, ⚠️ dormant
 ```sql
 ALTER TABLE animales ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "tenant_isolation" ON animales
-  USING (finca_id = current_setting('app.finca_id')::uuid);
--- Phase 0: set hardcoded. Phase 1: comes from the user's JWT.
+  USING      (finca_id = current_setting('app.finca_id', true)::uuid)
+  WITH CHECK (finca_id = current_setting('app.finca_id', true)::uuid);
+-- `, true` → returns NULL instead of erroring when the GUC is unset, so an
+-- unconfigured non-service_role session sees zero rows (fail-closed).
+-- Phase 0: bypassed by service_role. Phase 1: finca_id comes from the user's JWT.
 ```
 
-### 4. `whatsapp_users` is N:M with `fincas`
-A phone number can belong to multiple farms (external vet, owner with multiple farms).
+### 4. `whatsapp_users` is N:M with `fincas` — 🎯 NOT BUILT (deferred on purpose)
+Deferred out of task #2: it changes the PK from `telefono` to a uuid and touches
+`session.ts` + `handler.ts` auth. Do it as its own task, not bundled into a schema
+migration. A phone number can belong to multiple farms (external vet, owner with
+multiple farms).
 ```sql
 CREATE TABLE whatsapp_users (
   id      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -162,8 +182,9 @@ CREATE TABLE whatsapp_user_fincas (
 );
 ```
 
-### 5. Catalogs: global + per-farm
-`cat_vacunas`, `cat_medicamentos`, `cat_diagnosticos`, etc. have nullable `finca_id`:
+### 5. Catalogs: global + per-farm — ✅ built
+`cat_vacunas`, `cat_medicamentos`, `cat_diagnosticos`, etc. have nullable `finca_id`
+(existing rows stayed NULL = global, which matches today's behavior):
 - `finca_id IS NULL` → global (available to all farms)
 - `finca_id = X` → only for that farm
 
@@ -183,17 +204,17 @@ Apply SQL in this order in the Supabase SQL Editor (all files now live in `db/`)
 
 ```
 -- Multi-tenant root
-🎯 fincas
+✅ fincas (1 row: the founder's farm)
 
--- Cattle data (finca_id column is 🎯 on all of them)
+-- Cattle data (all have finca_id NOT NULL + idx_<table>_finca + RLS enabled/dormant)
 ✅ animales · eventos_reproductivos · produccion_leche
 ✅ eventos_sanitarios · pesajes · movimientos · confirmaciones_pendientes
 
 -- Bot
-✅ whatsapp_users (flat shape today) · whatsapp_sessions
+✅ whatsapp_users (flat shape today — N:M rework deferred) · whatsapp_sessions
 🎯 whatsapp_user_fincas
-✅ cat_vacunas · cat_medicamentos · cat_diagnosticos
-✅ cat_razas · cat_tecnicos · cat_causas_mortalidad
+✅ cat_vacunas · cat_medicamentos · cat_diagnosticos   (nullable finca_id = global)
+✅ cat_razas · cat_tecnicos · cat_causas_mortalidad    (nullable finca_id = global)
 
 -- Views
 ✅ vw_historial_animal · vw_alertas · vw_respaldo_completo
@@ -204,7 +225,8 @@ Apply SQL in this order in the Supabase SQL Editor (all files now live in `db/`)
 // whatsapp_sessions — one row per active user
 {
   telefono:     string    // ✅ user's phone number (column is `telefono`, not `phone`)
-  finca_id:     uuid      // 🎯 active tenant — column does not exist yet
+  finca_id:     uuid      // 🎯 active tenant — deferred; not needed while a phone
+                          //    belongs to exactly one finca (see 02_multitenant.sql)
   current_flow: string    // ✅
   current_step: number    // ✅ 1, 2, 3...
   temp_data:    jsonb     // ✅ accumulated flow data
@@ -245,7 +267,9 @@ from the naming scheme above.
 
 ## Pending tasks — attack in this order
 - [x] ~~**1. Refactor `handler.ts`**~~ — done: 1290 lines → orchestrator + 6 flow modules
-- [ ] **2. Add `finca_id` to schema** — modify `db/schema.sql`, activate RLS on all tables
+- [x] ~~**2. Add `finca_id` to schema**~~ — done: `db/02_multitenant.sql` applied in Supabase.
+      `fincas` + `finca_id` on 7 data tables & 6 catalogs + RLS (dormant under `service_role`).
+      Deferred by design: `whatsapp_users` N:M, `whatsapp_sessions.finca_id`.
 - [x] ~~**3. Version `db/` and `workflows/`**~~ — done: moved into the repo, backed up on GitHub
 - [ ] **4. Tests on critical flows** — minimum integration tests for health and reproduction flows
 - [ ] **5. Meta template approval** — start Meta approval process for proactive alert templates
@@ -302,6 +326,6 @@ from the naming scheme above.
 
 ---
 
-*Last updated: multi-tenant architecture + SaaS roadmap + source of truth resolved.*
+*Last updated: task #2 done — multi-tenant schema applied (RLS dormant under service_role).*
 *Sections marked 🎯 are decided design, not implemented — verify against code before relying on them.*
 *Full project brief: `docs/README-ganaderia.md` (⚠️ outdated — describes n8n as primary).*
