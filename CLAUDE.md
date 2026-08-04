@@ -200,6 +200,9 @@ Apply SQL in this order in the Supabase SQL Editor (all files now live in `db/`)
 **No versioned migrations** — SQL is idempotent (`CREATE TABLE IF NOT EXISTS`,
 `CREATE OR REPLACE VIEW`). Preserve that idempotency in any new SQL.
 
+`db/diagnostics/` is **not** part of that chain: read-only `SELECT` scripts for
+investigating data, never applied as migrations.
+
 ### Tables
 `✅` = exists today · `🎯` = target, not built
 
@@ -231,9 +234,15 @@ Apply SQL in this order in the Supabase SQL Editor (all files now live in `db/`)
   current_flow: string    // ✅
   current_step: number    // ✅ 1, 2, 3...
   temp_data:    jsonb     // ✅ accumulated flow data
-  expires_at:   timestamp // 🎯 no TTL implemented yet — sessions never auto-expire
+  updated_at:   timestamp // ✅ UTC instant, rewritten on every saveSession
 }
 ```
+**Session TTL: ✅ implemented in the app, not in the schema.** There is no `expires_at`
+column and no DB-side cleanup. `getSession` compares `updated_at` against `EXPIRE_MIN`
+(30 min) in `src/lib/session.ts` and returns a fresh empty session once that elapses —
+so sessions do expire, but stale rows stay in the table forever. A DB-side TTL or a
+periodic purge is still 🎯, and would only matter for table growth, not for correctness.
+
 ### Available flows
 `✅` = implemented today · `🎯` = target, not built. Real flow id in parens when it differs
 from the naming scheme above.
