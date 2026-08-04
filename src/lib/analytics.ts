@@ -1,17 +1,10 @@
 import { supabase } from './supabase';
+import { today, addDays, shiftDate, daysBetween } from './dates';
 
 // Zootechnical analytics for the meeting dashboard: productive (weight/milk) and
 // reproductive (days open, calving interval, pregnancy rate) KPIs computed in JS
 // from the raw event tables.
 
-const DAY = 86_400_000;
-const isoDay = (d: Date) => d.toISOString().slice(0, 10);
-const daysBetween = (a: string, b: string) => Math.round((+new Date(b) - +new Date(a)) / DAY);
-const shiftDays = (n: number) => {
-  const d = new Date();
-  d.setDate(d.getDate() + n);
-  return isoDay(d);
-};
 const GESTACION_DIAS = 283; // average bovine gestation
 
 const avg = (xs: number[]): number | null => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
@@ -59,7 +52,7 @@ export async function getAnalytics(): Promise<Analytics> {
     supabase.from('animales').select('id, arete, sexo, categoria, estado, estado_reproductivo'),
     supabase.from('pesajes').select('animal_id, fecha, peso_kg, tipo').order('fecha', { ascending: true }),
     supabase.from('eventos_reproductivos').select('animal_id, tipo, fecha, resultado').order('fecha', { ascending: true }),
-    supabase.from('produccion_leche').select('animal_id, fecha, litros').gte('fecha', shiftDays(-30)),
+    supabase.from('produccion_leche').select('animal_id, fecha, litros').gte('fecha', addDays(-30)),
   ]);
   const animales = aRes.data || [];
   const pesajes = pRes.data || [];
@@ -156,15 +149,13 @@ export async function getAnalytics(): Promise<Analytics> {
   }
 
   // Próximos partos: hembras preñadas -> último servicio + 283 días.
-  const hoy = isoDay(new Date());
+  const hoy = today();
   const proximosPartos: ProxParto[] = [];
   for (const h of hembrasAct.filter((a) => a.estado_reproductivo === 'prenada')) {
     const evs = (reproByAnimal.get(h.id) || []).filter((e) => e.tipo === 'servicio').sort((x, y) => x.fecha.localeCompare(y.fecha));
     const ult = evs[evs.length - 1];
     if (!ult) continue;
-    const est = new Date(ult.fecha);
-    est.setDate(est.getDate() + GESTACION_DIAS);
-    const fechaEstimada = isoDay(est);
+    const fechaEstimada = shiftDate(ult.fecha, GESTACION_DIAS);
     proximosPartos.push({ arete: h.arete, fechaEstimada, diasRestantes: daysBetween(hoy, fechaEstimada) });
   }
   proximosPartos.sort((a, b) => a.fechaEstimada.localeCompare(b.fechaEstimada));

@@ -315,6 +315,28 @@ describe('navigation safety nets', () => {
 });
 
 // =====================================================================
+describe('farm timezone', () => {
+  it('dates an evening record to the current farm day, not the UTC one', async () => {
+    // 7:30 PM on Aug 4 at the farm — right after the afternoon ordeño, and already
+    // Aug 5 in UTC. This used to be stamped a day into the future.
+    vi.setSystemTime(new Date('2026-08-05T00:30:00.000Z'));
+
+    await converse(
+      listPick('menu:salud'),
+      button('salud:vacunacion'),
+      text('045'),
+      listPick('vac:Aftosa'),
+      button('dosis:2 ml'),
+      button('conf:si'),
+    );
+
+    const evento = db.insertsInto('eventos_sanitarios')[0];
+    expect(evento.fecha).toBe('2026-08-04');
+    expect(evento.proxima_fecha).toBe('2027-01-31'); // scheduled from Aug 4, not Aug 5
+  });
+});
+
+// =====================================================================
 describe('multi-tenant guard', () => {
   it('stamps finca_id on every row the health flows write', async () => {
     await converse(

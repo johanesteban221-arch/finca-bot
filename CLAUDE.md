@@ -83,6 +83,7 @@ via `/api/hardware/milk-record` with `X-Device-Key` header auth.
 - `src/app/api/cron/daily-alerts/route.ts`, `.../cron/backup/route.ts` — guarded by `CRON_SECRET`.
 - `src/middleware.ts` — Basic Auth on `/dashboard`; fail-closed (503 if password missing). Keep it that way.
 - `src/lib/tenant.ts` — `FINCA_ID` constant (Phase 0 single tenant). Every INSERT must pass it.
+- `src/lib/dates.ts` — farm-timezone calendar dates. **Every** stored `fecha` goes through it.
 
 ### Bot file structure — ✅ done (handler.ts refactor)
 ```
@@ -271,7 +272,9 @@ from the naming scheme above.
       `fincas` + `finca_id` on 7 data tables & 6 catalogs + RLS (dormant under `service_role`).
       Deferred by design: `whatsapp_users` N:M, `whatsapp_sessions.finca_id`.
 - [x] ~~**3. Version `db/` and `workflows/`**~~ — done: moved into the repo, backed up on GitHub
-- [ ] **4. Tests on critical flows** — minimum integration tests for health and reproduction flows
+- [x] ~~**4. Tests on critical flows**~~ — done: Vitest + 66 tests (`npm test`). Integration
+      tests for salud & reproducción driven through `handleMessage`, plus farm-timezone
+      regression tests. Only Supabase and `fetch` are faked — see `tests/helpers/`.
 - [ ] **5. Meta template approval** — start Meta approval process for proactive alert templates
 
 ---
@@ -309,12 +312,30 @@ from the naming scheme above.
   technical docs and function names in **English** (`handleMessage`, `getSession`).
 - **Colombian terminology:** potrero (not paddock), arete (not tag), ordeño (not milking session)
 - **Currency:** COP. **Regulation:** ICA Colombia, SINIGAN.
+- **Dates:** the server runs in UTC, the farm in `America/Bogota` (UTC-5). Any calendar day
+  stored in a `fecha` column comes from `src/lib/dates.ts` — never `new Date().toISOString()`,
+  which rolls over at 7 PM local and dates the afternoon ordeño to tomorrow. Instants
+  (`updated_at`, `generated_at`) stay UTC ISO and must not go through `dates.ts`.
 - SQL lowercase and idempotent; indexes named `idx_<table>_<column>`.
 - Commits: **Conventional Commits** with scope — `feat(bot):`, `feat(cron):`, `fix(docker):`.
 - n8n workflows: `GDP ·` prefix, `WF-NN` numbering, node names in Spanish.
 - Bot responses: no markdown. Use `━━━━━━━━━━━━━━━` as separators. Descriptive emojis. Plain-text tables.
 - Bot commands namespaced: `menu:`, `nav:menu`.
 - Uppercase placeholders for values to replace: `CHANGE_ME_GDP_VERIFY_TOKEN`.
+
+---
+
+## Tests
+`npm test` (Vitest, run mode) · `npm run test:watch`. Test-only dependency — the Docker
+production build is untouched.
+
+- `tests/helpers/fake-supabase.ts` — in-memory Supabase covering the query surface the bot
+  uses. Extend it when a flow starts using a new query shape.
+- `tests/helpers/harness.ts` — stubs global `fetch` to capture outgoing Meta payloads,
+  freezes the clock, seeds catalogs.
+- Flow tests run through `handleMessage`, the same entry point as the webhook, so routing
+  and session persistence are covered too. Add new flows here as they land.
+- Both flow suites assert `finca_id` on every written row — keep that guard.
 
 ---
 
@@ -326,6 +347,7 @@ from the naming scheme above.
 
 ---
 
-*Last updated: task #2 done — multi-tenant schema applied (RLS dormant under service_role).*
+*Last updated: tasks #2 and #4 done — multi-tenant schema applied, Vitest suite added,
+farm-timezone date bug fixed.*
 *Sections marked 🎯 are decided design, not implemented — verify against code before relying on them.*
 *Full project brief: `docs/README-ganaderia.md` (⚠️ outdated — describes n8n as primary).*

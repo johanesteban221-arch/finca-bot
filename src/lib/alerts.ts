@@ -2,13 +2,12 @@ import { supabase } from './supabase';
 
 // Shared alert queries used by both the daily-alerts cron and the web dashboard.
 
-const iso = (d: Date) => d.toISOString().slice(0, 10);
-export const today = () => iso(new Date());
-export const shift = (days: number) => {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return iso(d);
-};
+import { today, addDays } from './dates';
+
+// Re-exported under the names the cron route already imports. Alert windows are
+// farm-local calendar days, so they must agree with the dates the flows write.
+export { today };
+export const shift = addDays;
 
 export const PRENEZ_DIAS = 40; // days after service to suggest a pregnancy check
 

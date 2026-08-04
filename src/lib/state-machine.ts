@@ -12,13 +12,9 @@ export type FlowHandler = (inc: Incoming, session: Session) => Promise<void>;
 export type Flow = { start: FlowStarter; handle: FlowHandler };
 
 // ---------- Dates ----------
-export const today = () => new Date().toISOString().slice(0, 10);
-
-export const addDays = (n: number) => {
-  const d = new Date();
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
-};
+// Re-exported so flows keep importing dates from the state machine. The farm
+// timezone rules live in dates.ts — never build a date any other way.
+export { today, addDays } from './dates';
 
 // ---------- Input ----------
 // Interactive replies arrive as `id`, free text as `text`. Flows treat them uniformly.
