@@ -1,0 +1,76 @@
+{
+  "name": "GDP · WF-00 Verificación Webhook Meta",
+  "nodes": [
+    {
+      "id": "webhook-verify",
+      "name": "Webhook Meta Verify",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [256, 300],
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "gdp-whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "gdp-whatsapp-verify-001",
+      "notes": "Meta sends a GET to verify the webhook subscription. Same URL as WF-01 (POST) but different HTTP method."
+    },
+    {
+      "id": "if-verify-token",
+      "name": "Validar Verify Token",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [496, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            { "id": "c-mode", "leftValue": "={{ $json.query['hub.mode'] }}", "rightValue": "subscribe", "operator": { "type": "string", "operation": "equals" } },
+            { "id": "c-token", "leftValue": "={{ $json.query['hub.verify_token'] }}", "rightValue": "CHANGE_ME_GDP_VERIFY_TOKEN", "operator": { "type": "string", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "Security improvement over El Redil: only echo the challenge when mode=subscribe AND the verify_token matches the expected secret. Replace CHANGE_ME_GDP_VERIFY_TOKEN with the verify token you set in Meta."
+    },
+    {
+      "id": "respond-challenge",
+      "name": "Responder Challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [760, 200],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.query['hub.challenge'] }}",
+        "options": { "responseCode": 200 }
+      },
+      "notes": "Returns hub.challenge as plain text with 200 so Meta confirms the subscription."
+    },
+    {
+      "id": "respond-forbidden",
+      "name": "Responder 403",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [760, 400],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Forbidden",
+        "options": { "responseCode": 403 }
+      },
+      "notes": "Rejects verification attempts with a wrong or missing verify token."
+    }
+  ],
+  "connections": {
+    "Webhook Meta Verify": { "main": [[{ "node": "Validar Verify Token", "type": "main", "index": 0 }]] },
+    "Validar Verify Token": {
+      "main": [
+        [{ "node": "Responder Challenge", "type": "main", "index": 0 }],
+        [{ "node": "Responder 403", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1", "timezone": "America/Bogota" }
+}

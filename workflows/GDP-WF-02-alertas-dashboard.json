@@ -1,0 +1,52 @@
+{
+  "name": "GDP · WF-02 Alertas y Dashboard",
+  "nodes": [
+    {
+      "id": "cron",
+      "name": "Schedule Diario 06:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [0, 300],
+      "parameters": { "rule": { "interval": [{ "field": "days", "triggerAtHour": 6 }] } },
+      "notes": "Runs every day at 06:00 (America/Bogota) to push the daily alert digest."
+    },
+    {
+      "id": "alertas",
+      "name": "Consultar Alertas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [240, 300],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "parameters": { "method": "GET", "url": "=https://SUPABASE_PROJECT.supabase.co/rest/v1/vw_alertas?order=prioridad.asc,fecha_relevante.asc", "authentication": "predefinedCredentialType", "nodeCredentialType": "supabaseApi", "options": {} },
+      "notes": "Reads the unified alerts view (partos, secados, celos, prenez, sanidad)."
+    },
+    {
+      "id": "digest",
+      "name": "Formatear Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300],
+      "parameters": { "jsCode": "const rows = $input.all().map(i => i.json).filter(r => r && r.tipo_alerta);\nconst PRODUCTOR = 'PRODUCTOR_WA_ID';\nconst iconos = { parto_proximo:'🐣', secado:'🍼', celo_esperado:'❤️', chequear_prenez:'🔍', sanidad:'💉' };\nlet respuesta;\nif (!rows.length) {\n  respuesta = '✅ Sin alertas para hoy. Todo al día en el hato.';\n} else {\n  const lineas = rows.map(r => `${iconos[r.tipo_alerta] || '•'} ${r.arete}${r.nombre ? ' ('+r.nombre+')' : ''}: ${r.detalle}`);\n  respuesta = `📊 Alertas del hato (${rows.length})\\n\\n` + lineas.join('\\n');\n}\nreturn [{ json: { telefono: PRODUCTOR, respuesta } }];" },
+      "notes": "Builds the WhatsApp digest. Replace PRODUCTOR_WA_ID with the producer phone (wa_id)."
+    },
+    {
+      "id": "enviar",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [720, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "parameters": { "method": "POST", "url": "https://graph.facebook.com/v21.0/META_PHONE_NUMBER_ID/messages", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "contentType": "json", "specifyBody": "json", "jsonBody": "={{ JSON.stringify({ messaging_product:'whatsapp', to: $json.telefono, type:'text', text:{ body: $json.respuesta } }) }}", "options": {} },
+      "notes": "Sends the daily digest to the producer via Meta Cloud API."
+    }
+  ],
+  "connections": {
+    "Schedule Diario 06:00": { "main": [[{ "node": "Consultar Alertas", "type": "main", "index": 0 }]] },
+    "Consultar Alertas": { "main": [[{ "node": "Formatear Digest", "type": "main", "index": 0 }]] },
+    "Formatear Digest": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "timezone": "America/Bogota" }
+}

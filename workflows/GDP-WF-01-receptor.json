@@ -1,0 +1,300 @@
+{
+  "name": "GDP · WF-01 Receptor WhatsApp + IA",
+  "nodes": [
+    {
+      "id": "wh",
+      "name": "Webhook Meta (POST)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 400],
+      "webhookId": "gdp-whatsapp-msg-001",
+      "onError": "continueRegularOutput",
+      "parameters": { "httpMethod": "POST", "path": "gdp-whatsapp", "responseMode": "onReceived", "options": { "responseCode": 200 } },
+      "notes": "Receives WhatsApp message events from Meta. ACKs 200 immediately; processing continues async."
+    },
+    {
+      "id": "norm",
+      "name": "Normalizar Entrada",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 400],
+      "parameters": { "jsCode": "const root = $input.first().json;\nconst body = root.body || root || {};\nconst value = body?.entry?.[0]?.changes?.[0]?.value || {};\nconst msg = value?.messages?.[0];\nif (!msg) return [];\nconst tipo = msg.type;\nif (tipo !== 'text' && tipo !== 'audio') return [];\nreturn [{ json: {\n  telefono: msg.from,\n  tipo,\n  texto: tipo === 'text' ? (msg.text?.body || '') : '',\n  audio_id: tipo === 'audio' ? (msg.audio?.id || '') : '',\n  msg_id: msg.id\n} }];" },
+      "notes": "Parses the Meta payload, ignores status callbacks and non text/audio messages."
+    },
+    {
+      "id": "ifaudio",
+      "name": "¿Es Audio?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [440, 400],
+      "parameters": { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "id": "c1", "leftValue": "={{ $json.tipo }}", "rightValue": "audio", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "options": {} }
+    },
+    {
+      "id": "mediaurl",
+      "name": "Obtener URL Media",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [660, 260],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "parameters": { "method": "GET", "url": "=https://graph.facebook.com/v21.0/{{ $json.audio_id }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "options": {} },
+      "notes": "Meta: resolve the media id to a temporary download URL."
+    },
+    {
+      "id": "dlaudio",
+      "name": "Descargar Audio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [880, 260],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "parameters": { "method": "GET", "url": "={{ $json.url }}", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "options": { "response": { "response": { "responseFormat": "file", "outputPropertyName": "data" } } } },
+      "notes": "Downloads the audio binary into the 'data' property. URL is the temporary https link returned by Meta."
+    },
+    {
+      "id": "whisper",
+      "name": "Transcribir Whisper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1100, 260],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "parameters": { "method": "POST", "url": "https://api.openai.com/v1/audio/transcriptions", "authentication": "predefinedCredentialType", "nodeCredentialType": "openAiApi", "sendBody": true, "contentType": "multipart-form-data", "bodyParameters": { "parameters": [{ "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" }, { "name": "model", "value": "whisper-1" }, { "name": "language", "value": "es" }] }, "options": {} },
+      "notes": "OpenAI Whisper transcription (Spanish)."
+    },
+    {
+      "id": "setvoz",
+      "name": "Set Texto (Voz)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1320, 260],
+      "parameters": { "assignments": { "assignments": [{ "id": "v1", "name": "telefono", "value": "={{ $('Normalizar Entrada').item.json.telefono }}", "type": "string" }, { "id": "v2", "name": "texto", "value": "={{ $json.text }}", "type": "string" }, { "id": "v3", "name": "fuente", "value": "voz", "type": "string" }] }, "options": {} }
+    },
+    {
+      "id": "settexto",
+      "name": "Set Texto (Texto)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [660, 520],
+      "parameters": { "assignments": { "assignments": [{ "id": "t1", "name": "telefono", "value": "={{ $('Normalizar Entrada').item.json.telefono }}", "type": "string" }, { "id": "t2", "name": "texto", "value": "={{ $('Normalizar Entrada').item.json.texto }}", "type": "string" }, { "id": "t3", "name": "fuente", "value": "texto", "type": "string" }] }, "options": {} }
+    },
+    {
+      "id": "norm2",
+      "name": "Texto Normalizado",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1540, 400]
+    },
+    {
+      "id": "buscarpend",
+      "name": "Buscar Pendiente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1760, 400],
+      "onError": "continueRegularOutput",
+      "parameters": { "method": "GET", "url": "=https://SUPABASE_PROJECT.supabase.co/rest/v1/confirmaciones_pendientes?telefono=eq.{{ $json.telefono }}&estado=eq.pendiente&select=*&order=created_at.desc&limit=1", "authentication": "predefinedCredentialType", "nodeCredentialType": "supabaseApi", "options": {} },
+      "notes": "Looks up an active pending confirmation for this phone."
+    },
+    {
+      "id": "clasif",
+      "name": "Clasificar Flujo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 400],
+      "parameters": { "jsCode": "const pend = $input.all().map(i=>i.json).filter(r=>r && r.id);\nconst prev = $('Texto Normalizado').item.json;\nconst texto = (prev.texto||'').trim().toLowerCase();\nconst afirm = ['si','sí','confirmo','correcto','dale','ok','vale','de una','si confirmo'];\nconst niega = ['no','cancelar','cancela','corrige','corregir','negativo'];\nlet flujo = 'nuevo';\nconst pendiente = pend[0] || null;\nif (pendiente) {\n  if (afirm.includes(texto)) flujo = 'confirmar';\n  else if (niega.includes(texto)) flujo = 'cancelar';\n  else flujo = 'nuevo';\n}\nreturn [{ json: { telefono: prev.telefono, texto: prev.texto, fuente: prev.fuente, flujo, pendiente } }];" },
+      "notes": "Decides if the message confirms/cancels a pending action or is a new request."
+    },
+    {
+      "id": "swflujo",
+      "name": "Switch Flujo",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [2200, 400],
+      "parameters": { "mode": "rules", "rules": { "values": [{ "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $json.flujo }}", "rightValue": "confirmar", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "confirmar" }, { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $json.flujo }}", "rightValue": "cancelar", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "cancelar" }, { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $json.flujo }}", "rightValue": "nuevo", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "nuevo" }] }, "options": {} }
+    },
+    {
+      "id": "resolver",
+      "name": "Resolver Animal",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [2420, 200],
+      "onError": "continueRegularOutput",
+      "parameters": { "method": "GET", "url": "=https://SUPABASE_PROJECT.supabase.co/rest/v1/animales?arete=eq.{{ $json.pendiente.accion.arete }}&select=id&limit=1", "authentication": "predefinedCredentialType", "nodeCredentialType": "supabaseApi", "options": {} },
+      "notes": "Resolves arete -> animal_id for event inserts. Returns empty for new-animal alta."
+    },
+    {
+      "id": "insertar",
+      "name": "Insertar Registro",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [2640, 200],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "parameters": { "method": "POST", "url": "=https://SUPABASE_PROJECT.supabase.co/rest/v1/{{ $('Clasificar Flujo').item.json.pendiente.accion.tabla }}", "authentication": "predefinedCredentialType", "nodeCredentialType": "supabaseApi", "sendHeaders": true, "headerParameters": { "parameters": [{ "name": "Prefer", "value": "return=representation" }] }, "sendBody": true, "contentType": "json", "specifyBody": "json", "jsonBody": "={{ JSON.stringify(Object.assign({}, $('Clasificar Flujo').item.json.pendiente.accion.fila, ($json && $json[0] && $json[0].id ? { animal_id: $json[0].id } : {}))) }}", "options": {} },
+      "notes": "Commits the confirmed record into the target table, injecting animal_id when resolved."
+    },
+    {
+      "id": "markconf",
+      "name": "Marcar Confirmada",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [2860, 200],
+      "onError": "continueRegularOutput",
+      "parameters": { "method": "PATCH", "url": "=https://SUPABASE_PROJECT.supabase.co/rest/v1/confirmaciones_pendientes?id=eq.{{ $('Clasificar Flujo').item.json.pendiente.id }}", "authentication": "predefinedCredentialType", "nodeCredentialType": "supabaseApi", "sendBody": true, "contentType": "json", "specifyBody": "json", "jsonBody": "={{ JSON.stringify({ estado: 'confirmado' }) }}", "options": {} }
+    },
+    {
+      "id": "setrespconf",
+      "name": "Resp Confirmada",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [3080, 200],
+      "parameters": { "assignments": { "assignments": [{ "id": "rc1", "name": "telefono", "value": "={{ $('Clasificar Flujo').item.json.telefono }}", "type": "string" }, { "id": "rc2", "name": "respuesta", "value": "=✅ Registrado correctamente:\n{{ $('Clasificar Flujo').item.json.pendiente.resumen }}", "type": "string" }] }, "options": {} }
+    },
+    {
+      "id": "markcanc",
+      "name": "Marcar Cancelada",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [2420, 420],
+      "onError": "continueRegularOutput",
+      "parameters": { "method": "PATCH", "url": "=https://SUPABASE_PROJECT.supabase.co/rest/v1/confirmaciones_pendientes?id=eq.{{ $json.pendiente.id }}", "authentication": "predefinedCredentialType", "nodeCredentialType": "supabaseApi", "sendBody": true, "contentType": "json", "specifyBody": "json", "jsonBody": "={{ JSON.stringify({ estado: 'cancelado' }) }}", "options": {} }
+    },
+    {
+      "id": "setrespcanc",
+      "name": "Resp Cancelada",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [2640, 420],
+      "parameters": { "assignments": { "assignments": [{ "id": "rx1", "name": "telefono", "value": "={{ $('Clasificar Flujo').item.json.telefono }}", "type": "string" }, { "id": "rx2", "name": "respuesta", "value": "❌ Cancelado. No se guardó nada. Puedes enviarme el dato de nuevo.", "type": "string" }] }, "options": {} }
+    },
+    {
+      "id": "construir",
+      "name": "Construir Request IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2420, 620],
+      "parameters": { "jsCode": "const prev = $input.first().json;\nconst hoy = new Date().toISOString().slice(0,10);\nconst system = [\n 'Eres un asistente de gestión ganadera de doble propósito (bovinos).',\n 'Conviertes el mensaje del productor en UNA acción JSON. Responde SOLO JSON.',\n 'Forma: {\"accion_tipo\":\"registrar|consultar|ayuda|desconocido\",\"tabla\":\"animales|eventos_reproductivos|produccion_leche|eventos_sanitarios|pesajes|movimientos\",\"arete\":\"<arete del animal>\",\"fila\":{},\"consulta\":{\"arete\":\"\",\"tipo\":\"ficha|historial\"},\"resumen\":\"\"}',\n 'Usa snake_case en fila. Fechas YYYY-MM-DD (hoy es ' + hoy + ').',\n 'Para eventos identifica el animal con arete. Si no entiendes, accion_tipo=desconocido.'\n].join(' ');\nconst body = { model:'gpt-4o-mini', temperature:0, response_format:{type:'json_object'}, messages:[{role:'system',content:system},{role:'user',content: prev.texto}] };\nreturn [{ json: { telefono: prev.telefono, texto: prev.texto, fuente: prev.fuente, body } }];" }
+    },
+    {
+      "id": "parseria",
+      "name": "OpenAI Parser IA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [2640, 620],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "parameters": { "method": "POST", "url": "https://api.openai.com/v1/chat/completions", "authentication": "predefinedCredentialType", "nodeCredentialType": "openAiApi", "sendBody": true, "contentType": "json", "specifyBody": "json", "jsonBody": "={{ $json.body }}", "options": {} }
+    },
+    {
+      "id": "parsear",
+      "name": "Parsear IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2860, 620],
+      "parameters": { "jsCode": "const resp = $input.first().json;\nlet parsed = {};\ntry { parsed = JSON.parse(resp.choices[0].message.content); } catch(e) { parsed = { accion_tipo:'desconocido', resumen:'No pude interpretar el mensaje.' }; }\nconst prev = $('Construir Request IA').item.json;\nreturn [{ json: Object.assign({ telefono: prev.telefono, texto: prev.texto, fuente: prev.fuente }, parsed) }];" }
+    },
+    {
+      "id": "swintencion",
+      "name": "Switch Intención",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [3080, 620],
+      "parameters": { "mode": "rules", "rules": { "values": [{ "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $json.accion_tipo }}", "rightValue": "registrar", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "registrar" }, { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $json.accion_tipo }}", "rightValue": "consultar", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "consultar" }, { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $json.accion_tipo }}", "rightValue": "ayuda", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "ayuda" }, { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 }, "conditions": [{ "leftValue": "={{ $json.accion_tipo }}", "rightValue": "desconocido", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "desconocido" }] }, "options": { "fallbackOutput": "extra" } }
+    },
+    {
+      "id": "guardarpend",
+      "name": "Guardar Pendiente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [3300, 440],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "parameters": { "method": "POST", "url": "=https://SUPABASE_PROJECT.supabase.co/rest/v1/confirmaciones_pendientes", "authentication": "predefinedCredentialType", "nodeCredentialType": "supabaseApi", "sendHeaders": true, "headerParameters": { "parameters": [{ "name": "Prefer", "value": "return=representation" }] }, "sendBody": true, "contentType": "json", "specifyBody": "json", "jsonBody": "={{ JSON.stringify({ telefono: $json.telefono, accion: { tabla: $json.tabla, arete: $json.arete, fila: $json.fila }, resumen: $json.resumen, fuente: $json.fuente || 'texto', estado: 'pendiente', expires_at: new Date(Date.now()+900000).toISOString() }) }}", "options": {} },
+      "notes": "Stores the parsed action awaiting confirmation (confirm-before-write)."
+    },
+    {
+      "id": "setresppend",
+      "name": "Resp Pedir Confirmación",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [3520, 440],
+      "parameters": { "assignments": { "assignments": [{ "id": "rp1", "name": "telefono", "value": "={{ $('Parsear IA').item.json.telefono }}", "type": "string" }, { "id": "rp2", "name": "respuesta", "value": "=📝 Entendí esto:\n\n{{ $('Parsear IA').item.json.resumen }}\n\n¿Confirmas? Responde *SÍ* para guardar o *NO* para cancelar.", "type": "string" }] }, "options": {} }
+    },
+    {
+      "id": "consultar",
+      "name": "Consultar",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [3300, 620],
+      "onError": "continueRegularOutput",
+      "parameters": { "method": "GET", "url": "=https://SUPABASE_PROJECT.supabase.co/rest/v1/animales?arete=eq.{{ $json.consulta.arete }}&select=*&limit=1", "authentication": "predefinedCredentialType", "nodeCredentialType": "supabaseApi", "options": {} },
+      "notes": "Fetches the animal record (ficha). Full historial via vw_historial_animal is a follow-up enhancement."
+    },
+    {
+      "id": "fmtconsulta",
+      "name": "Formatear Consulta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3520, 620],
+      "parameters": { "jsCode": "const rows = $input.all().map(i=>i.json).filter(r=>r && r.id);\nconst tel = $('Parsear IA').item.json.telefono;\nlet respuesta;\nif (!rows.length) { respuesta = 'No encontré un animal con ese arete.'; }\nelse { const a = rows[0]; respuesta = `🐄 Ficha ${a.arete}${a.nombre ? ' (' + a.nombre + ')' : ''}\\nSexo: ${a.sexo} | Raza: ${a.raza || '-'}\\nNacimiento: ${a.fecha_nacimiento || '-'} | Peso nac: ${a.peso_nacimiento || '-'} kg\\nEstado: ${a.estado} | Reprod: ${a.estado_reproductivo || '-'}`; }\nreturn [{ json: { telefono: tel, respuesta } }];" }
+    },
+    {
+      "id": "setrespayuda",
+      "name": "Resp Ayuda",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [3300, 800],
+      "parameters": { "assignments": { "assignments": [{ "id": "ra1", "name": "telefono", "value": "={{ $('Parsear IA').item.json.telefono }}", "type": "string" }, { "id": "ra2", "name": "respuesta", "value": "🐄 Comandos:\n• Registrar animal: \"Registra la vaca 0452, raza Gyr, hija de la 0310\"\n• Celo/servicio: \"Inseminé la 0452 con pajilla X\"\n• Leche: \"La 0452 dio 12 litros en la mañana\"\n• Sanidad: \"Vacuné la 0452 contra aftosa\"\n• Peso: \"La 0452 pesa 380 kg\"\n• Consultar: \"Muéstrame todo de la 0452\"", "type": "string" }] }, "options": {} }
+    },
+    {
+      "id": "setrespdesc",
+      "name": "Resp Desconocido",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [3300, 960],
+      "parameters": { "assignments": { "assignments": [{ "id": "rd1", "name": "telefono", "value": "={{ $('Parsear IA').item.json.telefono }}", "type": "string" }, { "id": "rd2", "name": "respuesta", "value": "=No entendí 🤔. {{ $('Parsear IA').item.json.resumen }}\nEscribe *ayuda* para ver ejemplos.", "type": "string" }] }, "options": {} }
+    },
+    {
+      "id": "enviar",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [3960, 560],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "parameters": { "method": "POST", "url": "https://graph.facebook.com/v21.0/META_PHONE_NUMBER_ID/messages", "authentication": "genericCredentialType", "genericAuthType": "httpHeaderAuth", "sendBody": true, "contentType": "json", "specifyBody": "json", "jsonBody": "={{ JSON.stringify({ messaging_product:'whatsapp', to: $json.telefono, type:'text', text:{ body: $json.respuesta } }) }}", "options": {} },
+      "notes": "Sends the reply back to the producer via Meta Cloud API."
+    }
+  ],
+  "connections": {
+    "Webhook Meta (POST)": { "main": [[{ "node": "Normalizar Entrada", "type": "main", "index": 0 }]] },
+    "Normalizar Entrada": { "main": [[{ "node": "¿Es Audio?", "type": "main", "index": 0 }]] },
+    "¿Es Audio?": { "main": [[{ "node": "Obtener URL Media", "type": "main", "index": 0 }], [{ "node": "Set Texto (Texto)", "type": "main", "index": 0 }]] },
+    "Obtener URL Media": { "main": [[{ "node": "Descargar Audio", "type": "main", "index": 0 }]] },
+    "Descargar Audio": { "main": [[{ "node": "Transcribir Whisper", "type": "main", "index": 0 }]] },
+    "Transcribir Whisper": { "main": [[{ "node": "Set Texto (Voz)", "type": "main", "index": 0 }]] },
+    "Set Texto (Voz)": { "main": [[{ "node": "Texto Normalizado", "type": "main", "index": 0 }]] },
+    "Set Texto (Texto)": { "main": [[{ "node": "Texto Normalizado", "type": "main", "index": 0 }]] },
+    "Texto Normalizado": { "main": [[{ "node": "Buscar Pendiente", "type": "main", "index": 0 }]] },
+    "Buscar Pendiente": { "main": [[{ "node": "Clasificar Flujo", "type": "main", "index": 0 }]] },
+    "Clasificar Flujo": { "main": [[{ "node": "Switch Flujo", "type": "main", "index": 0 }]] },
+    "Switch Flujo": { "main": [[{ "node": "Resolver Animal", "type": "main", "index": 0 }], [{ "node": "Marcar Cancelada", "type": "main", "index": 0 }], [{ "node": "Construir Request IA", "type": "main", "index": 0 }]] },
+    "Resolver Animal": { "main": [[{ "node": "Insertar Registro", "type": "main", "index": 0 }]] },
+    "Insertar Registro": { "main": [[{ "node": "Marcar Confirmada", "type": "main", "index": 0 }]] },
+    "Marcar Confirmada": { "main": [[{ "node": "Resp Confirmada", "type": "main", "index": 0 }]] },
+    "Resp Confirmada": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "Marcar Cancelada": { "main": [[{ "node": "Resp Cancelada", "type": "main", "index": 0 }]] },
+    "Resp Cancelada": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "Construir Request IA": { "main": [[{ "node": "OpenAI Parser IA", "type": "main", "index": 0 }]] },
+    "OpenAI Parser IA": { "main": [[{ "node": "Parsear IA", "type": "main", "index": 0 }]] },
+    "Parsear IA": { "main": [[{ "node": "Switch Intención", "type": "main", "index": 0 }]] },
+    "Switch Intención": { "main": [[{ "node": "Guardar Pendiente", "type": "main", "index": 0 }], [{ "node": "Consultar", "type": "main", "index": 0 }], [{ "node": "Resp Ayuda", "type": "main", "index": 0 }], [{ "node": "Resp Desconocido", "type": "main", "index": 0 }]] },
+    "Guardar Pendiente": { "main": [[{ "node": "Resp Pedir Confirmación", "type": "main", "index": 0 }]] },
+    "Resp Pedir Confirmación": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "Consultar": { "main": [[{ "node": "Formatear Consulta", "type": "main", "index": 0 }]] },
+    "Formatear Consulta": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "Resp Ayuda": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] },
+    "Resp Desconocido": { "main": [[{ "node": "Enviar WhatsApp", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "timezone": "America/Bogota" }
+}
