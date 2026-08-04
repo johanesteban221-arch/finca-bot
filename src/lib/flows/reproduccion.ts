@@ -6,6 +6,7 @@ import { Session, saveSession, clearSession } from '../session';
 import { getCatalog } from '../catalogs';
 import { supabase } from '../supabase';
 import { findAnimal, findOrCreateAnimal, sexoTitle } from '../animals';
+import { FINCA_ID } from '../tenant';
 import { showMenu } from '../menu';
 import {
   Flow, today, inputOf, validArete, goToStep, sendConfirm, confirmBody,
@@ -143,6 +144,7 @@ const ningunoOr = (v: string) => (/^ninguno$/i.test(v) ? null : v);
 async function saveServicio(t: Record<string, any>): Promise<void> {
   const animalId = await findOrCreateAnimal(t.arete, 'un servicio');
   await supabase.from('eventos_reproductivos').insert({
+    finca_id: FINCA_ID,
     animal_id: animalId,
     tipo: 'servicio',
     fecha: today(),
@@ -193,6 +195,7 @@ export const dxPrenez: Flow = {
       if (input === 'conf:si') {
         const animalId = await findOrCreateAnimal(t.arete, 'un diagnóstico');
         await supabase.from('eventos_reproductivos').insert({
+          finca_id: FINCA_ID,
           animal_id: animalId,
           tipo: 'diagnostico_prenez',
           fecha: today(),
@@ -314,6 +317,7 @@ async function saveParto(t: Record<string, any>): Promise<void> {
     const { data: nueva } = await supabase
       .from('animales')
       .insert({
+        finca_id: FINCA_ID,
         arete: t.cria,
         sexo: t.sexo,
         madre_id: madreId,
@@ -331,11 +335,12 @@ async function saveParto(t: Record<string, any>): Promise<void> {
   // Birth weight also recorded as a weighing for the calf's weight history.
   if (t.peso && cria?.id) {
     await supabase.from('pesajes').insert({
-      animal_id: cria.id, fecha: today(), peso_kg: t.peso, tipo: 'nacimiento',
+      finca_id: FINCA_ID, animal_id: cria.id, fecha: today(), peso_kg: t.peso, tipo: 'nacimiento',
     });
   }
 
   await supabase.from('eventos_reproductivos').insert({
+    finca_id: FINCA_ID,
     animal_id: madreId,
     tipo: 'parto',
     fecha: today(),

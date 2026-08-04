@@ -6,6 +6,7 @@ import { sendText, sendButtons, sendList } from '../whatsapp';
 import { saveSession, clearSession } from '../session';
 import { supabase } from '../supabase';
 import { findOrCreateAnimal } from '../animals';
+import { FINCA_ID } from '../tenant';
 import {
   Flow, today, inputOf, validArete, goToStep, sendConfirm, confirmBody,
   MSG_INVALID_ARETE, MSG_DESYNC, MSG_MENU_HINT, MSG_CANCEL_LONG,
@@ -103,6 +104,7 @@ export const pesaje: Flow = {
 async function savePesaje(t: Record<string, any>): Promise<void> {
   const animalId = await findOrCreateAnimal(t.arete, 'un pesaje');
   await supabase.from('pesajes').insert({
+    finca_id: FINCA_ID,
     animal_id: animalId,
     fecha: today(),
     peso_kg: t.peso,

@@ -9,6 +9,7 @@ import { Session, saveSession, clearSession } from '../session';
 import { getCatalog } from '../catalogs';
 import { supabase } from '../supabase';
 import { findAnimal, CATEGORIAS, catTitle, sexoTitle } from '../animals';
+import { FINCA_ID } from '../tenant';
 import {
   Flow, inputOf, validArete, goToStep, sendConfirm, confirmBody,
   MSG_INVALID_ARETE, MSG_DESYNC, MSG_MENU_HINT, MSG_CANCEL_SHORT,
@@ -83,6 +84,7 @@ export const animal: Flow = {
       if (input === 'conf:si') {
         if (t.nuevo) {
           await supabase.from('animales').insert({
+            finca_id: FINCA_ID,
             arete: t.arete,
             sexo: t.sexo,
             raza: t.raza ?? null,

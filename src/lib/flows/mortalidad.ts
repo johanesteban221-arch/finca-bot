@@ -6,6 +6,7 @@ import { saveSession, clearSession } from '../session';
 import { getCatalog } from '../catalogs';
 import { supabase } from '../supabase';
 import { findOrCreateAnimal } from '../animals';
+import { FINCA_ID } from '../tenant';
 import {
   Flow, today, inputOf, validArete, goToStep, sendConfirm, confirmBody,
   MSG_INVALID_ARETE, MSG_DESYNC, MSG_MENU_HINT, MSG_CANCEL_SHORT,
@@ -52,6 +53,7 @@ export const mortalidad: Flow = {
       if (input === 'conf:si') {
         const animalId = await findOrCreateAnimal(t.arete, 'una baja');
         await supabase.from('movimientos').insert({
+          finca_id: FINCA_ID,
           animal_id: animalId,
           tipo: 'muerte',
           fecha: today(),

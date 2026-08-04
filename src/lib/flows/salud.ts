@@ -6,6 +6,7 @@ import { Session, saveSession, clearSession } from '../session';
 import { getCatalog } from '../catalogs';
 import { supabase } from '../supabase';
 import { findOrCreateAnimal } from '../animals';
+import { FINCA_ID } from '../tenant';
 import { showMenu } from '../menu';
 import {
   Flow, today, addDays, inputOf, validArete, goToStep, sendConfirm, confirmBody,
@@ -137,6 +138,7 @@ async function saveVacunacion(t: Record<string, any>): Promise<string | null> {
   const proxima = vac?.retiro_default_dias ? addDays(vac.retiro_default_dias) : null;
 
   await supabase.from('eventos_sanitarios').insert({
+    finca_id: FINCA_ID,
     animal_id: animalId,
     tipo: 'vacuna',
     fecha: today(),
@@ -254,6 +256,7 @@ async function saveTratamiento(t: Record<string, any>): Promise<string | null> {
   const retiro = await retiroLecheHasta(t.medicamento);
 
   await supabase.from('eventos_sanitarios').insert({
+    finca_id: FINCA_ID,
     animal_id: animalId,
     tipo: 'tratamiento',
     fecha: today(),
@@ -362,6 +365,7 @@ async function saveDesparasitacion(t: Record<string, any>): Promise<string> {
   const proxima = addDays(90); // dewormings are typically every ~3 months
 
   await supabase.from('eventos_sanitarios').insert({
+    finca_id: FINCA_ID,
     animal_id: animalId,
     tipo: 'desparasitacion',
     fecha: today(),

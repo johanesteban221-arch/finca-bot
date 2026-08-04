@@ -1,6 +1,7 @@
 // Animal lookup helpers shared by every flow that records an event against an arete.
 
 import { supabase } from './supabase';
+import { FINCA_ID } from './tenant';
 
 // Finds an animal by arete (read-only). Returns null when it doesn't exist.
 export async function findAnimal(arete: string): Promise<any | null> {
@@ -24,7 +25,7 @@ export async function findOrCreateAnimal(arete: string, origen: string): Promise
 
   const { data: nuevo } = await supabase
     .from('animales')
-    .insert({ arete, sexo: 'H', notas: `Creado automáticamente desde ${origen} por WhatsApp` })
+    .insert({ finca_id: FINCA_ID, arete, sexo: 'H', notas: `Creado automáticamente desde ${origen} por WhatsApp` })
     .select('id')
     .single();
   return nuevo?.id;
