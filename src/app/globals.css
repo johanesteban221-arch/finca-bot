@@ -1,0 +1,61 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------
+   Paleta agro. Dos familias:
+     campo  — verde de pasto/bosque, el color de marca
+     tierra — neutros cálidos (arena, barro), no grises azulados
+
+   Los tres colores semánticos ya significan algo para quien usa el tablero
+   desde antes del rediseño, así que se conservan:
+     rojo  = vencido        ámbar = próximo a vencer      azul = retiro de leche
+
+   Tipografía: pila del sistema a propósito. next/font/google descargaría en
+   tiempo de build, y el build de Docker en Easypanel no debería depender de
+   una llamada de red para arrancar.
+--------------------------------------------------------------------- */
+@theme {
+  --color-campo-50:  #f2f8f2;
+  --color-campo-100: #e0efe1;
+  --color-campo-200: #c2dfc5;
+  --color-campo-300: #94c69b;
+  --color-campo-400: #5fa56a;
+  --color-campo-500: #3d8749;
+  --color-campo-600: #2c6b37;
+  --color-campo-700: #24552e;
+  --color-campo-800: #1f4427;
+  --color-campo-900: #1a3821;
+  --color-campo-950: #0d1f12;
+
+  --color-tierra-50:  #faf8f5;
+  --color-tierra-100: #f2ede5;
+  --color-tierra-200: #e5dccd;
+  --color-tierra-300: #d3c4ac;
+  --color-tierra-400: #b8a184;
+  --color-tierra-500: #a08765;
+  --color-tierra-600: #8a7054;
+  --color-tierra-700: #715a46;
+  --color-tierra-800: #5c4a3c;
+  --color-tierra-900: #4c3e33;
+  --color-tierra-950: #2a221c;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+               Arial, "Noto Sans", sans-serif;
+
+  /* Encabezados de tabla y etiquetas menores. */
+  --text-2xs: 0.6875rem;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-tierra-50 text-tierra-900 font-sans antialiased;
+  }
+
+  /* Pesos, litros y fechas se leen en columna: deben alinearse. */
+  table {
+    font-variant-numeric: tabular-nums;
+  }
+}

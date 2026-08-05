@@ -36,7 +36,9 @@ are relative to it.**
 
 | Path | Contents |
 |---|---|
-| `src/` | Next.js 15 app — the active bot |
+| `src/` | Next.js 15 app — bot, dashboard, domain layer |
+| `src/components/ui/` | Design-system primitives (Card, Kpi, Table, Badge, Bars, Banner) |
+| `tests/` | Vitest suite — `npm test` |
 | `db/` | Plain SQL for the Supabase SQL Editor (`diagnostics/` and `maintenance/` sit outside the apply chain) |
 | `workflows/` | n8n workflow JSON (`GDP · WF-NN`) |
 | `docs/` | `README-ganaderia.md` and guides |
@@ -85,14 +87,18 @@ via `/api/hardware/milk-record` with `X-Device-Key` header auth.
 - `src/lib/tenant.ts` — `FINCA_ID` constant (Phase 0 single tenant). Every INSERT must pass it.
 - `src/lib/dates.ts` — farm-timezone calendar dates. **Every** stored `fecha` goes through it.
 
-### Bot file structure — ✅ done (handler.ts refactor)
+### Bot file structure — ✅ done (handler.ts refactor + domain extraction)
 ```
 src/lib/
   handler.ts            ← orchestrator: auth, shortcuts, MENU_FLOWS/MENU_ACTIONS/FLOWS tables
   state-machine.ts      ← Flow type, step helpers, shared UI + message constants
   menu.ts               ← main menu (separate so flows can fall back without an import cycle)
   animals.ts            ← findAnimal / findOrCreateAnimal / CATEGORIAS
-  flows/
+  dates.ts              ← farm-timezone calendar dates
+  domain/               ← ⚠️ ALL writes live here — see the contract below
+    schemas.ts          ← zod schemas mirroring the DB CHECK constraints
+    animales · sanidad · reproduccion · pesajes · mortalidad
+  flows/                ← conversation only: prompts, steps, message wording
     animal.ts           ← registrar / categorizar animal
     salud.ts            ← pick + vacunación, tratamiento, desparasitación
     reproduccion.ts     ← pick + servicio, dx preñez, parto
@@ -105,6 +111,24 @@ src/lib/
 the user picks it from the menu (sets `current_flow` and sends the first prompt); `handle`
 receives every subsequent message and branches on `session.current_step`. To add a flow:
 write the module, then register it in `handler.ts`'s `MENU_FLOWS` + `FLOWS`.
+
+### Domain contract — ⚠️ read before adding any write
+**Every write to a data table goes through `src/lib/domain/`.** Flows and (from Fase 3)
+dashboard forms are entry channels; neither may talk to `supabase.from(...).insert()`
+directly. The rule exists because of the derived values: a tratamiento sets
+`retiro_leche_hasta`, the date until which that cow's milk cannot be shipped. Computed in
+two places, the two eventually drift, and the failure mode is contaminated milk in the tank.
+
+- Domain functions validate with zod (`schemas.ts`), write, and **return what the caller
+  needs to render** — derived dates, created ids, and whether the animal had to be created.
+- Flows keep their per-step validation: that is what produces the friendly WhatsApp
+  messages. The schemas are the backstop underneath, not a replacement.
+- Every write takes an optional `fecha`, defaulting to the farm's today and rejecting the
+  future. Derived dates shift from the **event date**, not from today, so a backdated entry
+  schedules correctly.
+- There are no multi-statement transactions (supabase-js has no API for them). `registrarParto`
+  writes to four tables in sequence; a mid-way failure leaves partial data. Move it to a
+  Postgres RPC if that ever bites.
 
 ---
 
@@ -284,6 +308,11 @@ from the naming scheme above.
 
 ## Stack
 - **App:** Next.js 15.1.6 (App Router) + React 19 + TypeScript 5.7, `output: 'standalone'`
+- **UI:** Tailwind **v4** (CSS-first config in `src/app/globals.css`, no `tailwind.config.js`)
+  + `clsx`/`tailwind-merge` via `src/lib/cn.ts` + `lucide-react`. Verified against Next 15.1.6.
+  Fonts are the **system stack on purpose** — `next/font/google` would make the Docker build
+  depend on a network call.
+- **Validation:** `zod` — schemas in `src/lib/domain/schemas.ts`
 - **DB:** Supabase (Postgres) via `@supabase/supabase-js`, `service_role` key
 - **Messaging:** Meta WhatsApp Cloud API — interactive templates only
 - **AI:** 🎯 Claude API (Anthropic) — owner open queries + anomaly detection only (not integrated yet; OpenAI inside n8n WF-01 is what runs today)
@@ -305,9 +334,29 @@ from the naming scheme above.
       regression tests. Only Supabase and `fetch` are faked — see `tests/helpers/`.
 - [ ] **5. Meta template approval** — start Meta approval process for proactive alert templates
 
-### Dashboard backlog (from the review of `src/app/dashboard/page.tsx`)
-Detail tables for alerts, read-path error handling, and the sanidad/mortalidad sections
-are **done**. What was deliberately deferred:
+### Dashboard rework — Fase 0 y 1 ✅, Fase 2 y 3 pendientes
+Agreed plan: **0** extract domain → **1** visual redesign → **2** auth by role → **3** forms.
+The order is deliberate: forms built before the domain extraction would duplicate the
+business rules, forms built before the redesign would need restyling nine times over, and
+forms built before auth would need authorization retrofitted into nine write paths.
+
+- [x] ~~**Fase 0 — domain layer**~~ — `src/lib/domain/`, zod schemas, flows refactored to
+      call it. 99 existing tests passed with no expect touched; 29 domain tests added.
+- [x] ~~**Fase 1 — visual redesign**~~ — Tailwind v4, agro palette (`campo`/`tierra`),
+      sidebar shell, `src/components/ui/`.
+- [ ] **Fase 2 — auth by role** — Supabase Auth + `usuarios`/`usuario_fincas`, replacing
+      Basic Auth. Roles: dueño · admin · veterinario · vaquero, enforced **server-side** in
+      every write, not by hiding buttons. Two hazards: locking the owner out of production
+      (keep Basic Auth behind an env flag during migration), and moving the dashboard off
+      `service_role`, which activates the fail-closed RLS — a bad `finca_id` claim shows an
+      empty farm rather than an error. Closes items #6 and the deferred `whatsapp_user_fincas`.
+- [ ] **Fase 3 — dashboard forms** — the nine flows as web forms via Server Actions. Notes:
+      `findOrCreateAnimal` must **confirm before creating** from a form (a typo'd arete would
+      silently create a ghost animal); backdating invalidates the assumption behind
+      `db/diagnostics/fechas_desfasadas_utc.sql`, which must be updated in the same phase;
+      and there is still no `created_by` column to record who wrote what.
+
+Deferred from the earlier dashboard review:
 
 - [ ] **6. Filter dashboard queries by `finca_id`** — ⚠️ Phase 1 blocker. `analytics.ts` and
       `alerts.ts` read every row of every table with no tenant filter, and RLS is dormant
@@ -375,8 +424,8 @@ are **done**. What was deliberately deferred:
 ---
 
 ## Tests
-`npm test` (Vitest, run mode) · `npm run test:watch`. Test-only dependency — the Docker
-production build is untouched.
+`npm test` (Vitest, run mode) · `npm run test:watch`. 128 tests. Test-only dependency — the
+Docker production build is untouched.
 
 - `tests/helpers/fake-supabase.ts` — in-memory Supabase covering the query surface the app
   uses: `eq/gte/lte/gt/lt/not(is,null)`, `order`, `limit`, dotted paths for embedded
@@ -409,8 +458,7 @@ query into a convincing empty result. Every read goes through `unwrapList()` in
 
 ---
 
-*Last updated: tasks #2 and #4 done — multi-tenant schema applied, Vitest suite added,
-farm-timezone date bug fixed. Dashboard: alert detail, read-path error handling and
-sanidad/mortalidad sections added; items 6–10 deferred.*
+*Last updated: dashboard rework Fase 0 (domain layer) and Fase 1 (Tailwind v4 redesign)
+done. Fase 2 (auth by role) and Fase 3 (forms) pending.*
 *Sections marked 🎯 are decided design, not implemented — verify against code before relying on them.*
 *Full project brief: `docs/README-ganaderia.md` (⚠️ outdated — describes n8n as primary).*

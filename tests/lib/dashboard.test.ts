@@ -97,7 +97,9 @@ describe('sanidad and mortalidad sections', () => {
   it('renders the health section with its counts and recent events', async () => {
     const html = await render();
 
-    expect(html).toContain('Sanidad (últimos 90 días)');
+    // El título y su ventana son dos elementos desde el rediseño, no una cadena.
+    expect(html).toContain('Sanidad');
+    expect(html).toContain('últimos 90 días');
     expect(html).toContain('Diagnósticos más frecuentes');
     expect(html).toContain('Mastitis');
   });
