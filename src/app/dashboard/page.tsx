@@ -1,5 +1,5 @@
 import { getAnalytics } from '@/lib/analytics';
-import { getProximas, getRetiros, getPrenezPendientes } from '@/lib/alerts';
+import { getProximas, getRetiros, getPrenezPendientes, PRENEZ_DIAS } from '@/lib/alerts';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -55,10 +55,58 @@ function Bars({ data }: { data: Record<string, number> }) {
 const th: React.CSSProperties = { textAlign: 'left', padding: '6px 8px', fontSize: 12, color: C.sub, borderBottom: `1px solid ${C.border}` };
 const td: React.CSSProperties = { padding: '6px 8px', fontSize: 13, borderBottom: `1px solid ${C.track}` };
 
+function Empty({ cols, children }: { cols: number; children: React.ReactNode }) {
+  return <tr><td style={td} colSpan={cols}><span style={{ color: C.sub }}>{children}</span></td></tr>;
+}
+
+// Shown when a query failed. The point is that a broken query must never be
+// indistinguishable from "no hay nada que reportar".
+function Banner({ fallos }: { fallos: string[] }) {
+  return (
+    <div style={{ background: '#fff5f5', border: `1px solid ${C.red}`, borderRadius: 12, padding: '12px 16px', marginBottom: 20 }}>
+      <b style={{ color: C.red, fontSize: 14 }}>⚠️ Datos incompletos</b>
+      <p style={{ margin: '6px 0 0', fontSize: 13, color: C.ink }}>
+        No se pudieron cargar algunos indicadores. Lo que falta aparece como «—», no como cero.
+      </p>
+      <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 12, color: C.sub }}>
+        {fallos.map((f) => <li key={f}>{f}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+const TIPO_SANIDAD: Record<string, string> = {
+  vacuna: '💉 Vacunación', tratamiento: '🔴 Tratamiento',
+  desparasitacion: '🪱 Desparasitación', revision: '🩺 Revisión',
+};
+
+const errorOf = (r: PromiseRejectedResult) =>
+  r.reason instanceof Error ? r.reason.message : String(r.reason);
+
+/** Plural-aware day countdown used by the alert tables. */
+const enDias = (d: number) => (d === 0 ? 'hoy' : d === 1 ? 'mañana' : `en ${d} días`);
+const haceDias = (d: number) => (d === -1 ? 'ayer' : `hace ${Math.abs(d)} días`);
+
 export default async function Dashboard() {
-  const [a, proximas, retiros, prenez] = await Promise.all([
+  // allSettled, not all: one failing query should degrade its own section
+  // instead of blanking the whole tablero.
+  const [aRes, proxRes, retRes, prenezRes] = await Promise.allSettled([
     getAnalytics(), getProximas(), getRetiros(), getPrenezPendientes(),
   ]);
+
+  const a = aRes.status === 'fulfilled' ? aRes.value : null;
+  const proximas = proxRes.status === 'fulfilled' ? proxRes.value : null;
+  const retiros = retRes.status === 'fulfilled' ? retRes.value : null;
+  const prenez = prenezRes.status === 'fulfilled' ? prenezRes.value : null;
+
+  const fallos = ([
+    ['Indicadores del hato', aRes],
+    ['Próximas / vencidas', proxRes],
+    ['Retiros de leche', retRes],
+    ['Revisar preñez', prenezRes],
+  ] as const)
+    .filter(([, r]) => r.status === 'rejected')
+    .map(([label, r]) => `${label} — ${errorOf(r as PromiseRejectedResult)}`);
 
   return (
     <main style={{ fontFamily: 'system-ui, sans-serif', background: C.bg, minHeight: '100vh', margin: 0, padding: '28px 24px', color: C.ink }}>
@@ -66,7 +114,10 @@ export default async function Dashboard() {
         <h1 style={{ margin: '0 0 4px', fontSize: 26 }}>🐄 Finca — Tablero de gestión</h1>
         <p style={{ margin: '0 0 22px', color: C.sub, fontSize: 14 }}>Indicadores productivos y reproductivos. Datos en vivo desde Supabase.</p>
 
+        {fallos.length > 0 && <Banner fallos={fallos} />}
+
         {/* INVENTARIO */}
+        {a && (
         <Section title="📋 Inventario del hato">
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
             <Kpi label="Activos" value={a.inventario.activos} color={C.green} />
@@ -77,8 +128,10 @@ export default async function Dashboard() {
           </div>
           <Card flex="1 1 100%"><b style={{ fontSize: 14 }}>Por categoría</b><div style={{ marginTop: 8 }}><Bars data={a.inventario.porCategoria} /></div></Card>
         </Section>
+        )}
 
-        {/* REPRODUCTIVO */}
+        {/* REPRODUCTIVO · PESO · LECHE — all come from getAnalytics() */}
+        {a && (<>
         <Section title="🍼 Reproductivo">
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
             <Kpi label="Tasa de preñez" value={dash(a.reproductivo.tasaPrenezPct, '%')} color={C.blue} hint={`${a.reproductivo.prenadasDx}/${a.reproductivo.diagnosticos} dx positivos`} />
@@ -159,12 +212,139 @@ export default async function Dashboard() {
           )}
         </Section>
 
+        {/* SANIDAD */}
+        <Section title={`🩺 Sanidad (últimos ${a.sanidad.ventanaDias} días)`}>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+            <Kpi label="Eventos registrados" value={a.sanidad.total} color={C.green} />
+            <Kpi label="Vacunaciones" value={a.sanidad.porTipo.vacuna || 0} />
+            <Kpi label="Tratamientos" value={a.sanidad.porTipo.tratamiento || 0} color={C.red} />
+            <Kpi label="Desparasitaciones" value={a.sanidad.porTipo.desparasitacion || 0} />
+          </div>
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+            <Card>
+              <b style={{ fontSize: 14 }}>Diagnósticos más frecuentes</b>
+              <div style={{ marginTop: 8 }}>
+                <Bars data={Object.fromEntries(a.sanidad.diagnosticosTop.map((d) => [d.diagnostico, d.n]))} />
+              </div>
+            </Card>
+            <Card>
+              <b style={{ fontSize: 14 }}>Últimos eventos</b>
+              <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
+                <thead><tr><th style={th}>Arete</th><th style={th}>Tipo</th><th style={th}>Producto</th><th style={th}>Fecha</th></tr></thead>
+                <tbody>
+                  {a.sanidad.recientes.length === 0 && <Empty cols={4}>Sin eventos sanitarios en la ventana.</Empty>}
+                  {a.sanidad.recientes.map((e, i) => (
+                    <tr key={`${e.arete}-${e.fecha}-${i}`}>
+                      <td style={td}><b>{e.arete}</b></td>
+                      <td style={td}>{TIPO_SANIDAD[e.tipo] || e.tipo}</td>
+                      <td style={td}>{e.producto || (e.diagnostico ?? '—')}</td>
+                      <td style={td}>{e.fecha}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          </div>
+        </Section>
+
+        {/* MORTALIDAD */}
+        <Section title="💀 Mortalidad">
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+            <Kpi label="Muertes (12 meses)" value={a.mortalidad.ultimos12Meses} color={C.red} />
+            <Kpi label="Tasa anual aprox." value={dash(a.mortalidad.tasaAnualPct, '%')} color={C.amber} hint="muertes / (activos + muertes)" />
+            <Kpi label="Total histórico" value={a.mortalidad.total} />
+          </div>
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+            <Card>
+              <b style={{ fontSize: 14 }}>Causas (12 meses)</b>
+              <div style={{ marginTop: 8 }}><Bars data={a.mortalidad.porCausa} /></div>
+            </Card>
+            <Card>
+              <b style={{ fontSize: 14 }}>Últimas bajas</b>
+              <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
+                <thead><tr><th style={th}>Arete</th><th style={th}>Causa</th><th style={th}>Fecha</th></tr></thead>
+                <tbody>
+                  {a.mortalidad.recientes.length === 0 && <Empty cols={3}>Sin bajas registradas. 🎉</Empty>}
+                  {a.mortalidad.recientes.map((m, i) => (
+                    <tr key={`${m.arete}-${m.fecha}-${i}`}>
+                      <td style={td}><b>{m.arete}</b></td>
+                      <td style={td} title={m.causa}>{m.causa}</td>
+                      <td style={td}>{m.fecha}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          </div>
+        </Section>
+        </>)}
+
         {/* ALERTAS */}
         <Section title="⚠️ Alertas activas">
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            <Kpi label="Próximas / vencidas" value={proximas.length} color={C.amber} />
-            <Kpi label="Retiros de leche" value={retiros.length} color={C.blue} />
-            <Kpi label="Revisar preñez" value={prenez.length} />
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+            <Kpi label="Próximas / vencidas" value={dash(proximas?.length)} color={C.amber} />
+            <Kpi label="Retiros de leche" value={dash(retiros?.length)} color={C.blue} />
+            <Kpi label="Revisar preñez" value={dash(prenez?.length)} />
+          </div>
+
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+            <Card flex="1 1 460px">
+              <b style={{ fontSize: 14 }}>📅 Próximas y vencidas</b>
+              <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
+                <thead><tr><th style={th}>Arete</th><th style={th}>Tipo</th><th style={th}>Producto</th><th style={th}>Fecha</th><th style={th}>Estado</th></tr></thead>
+                <tbody>
+                  {proximas === null && <Empty cols={5}>No se pudo cargar.</Empty>}
+                  {proximas?.length === 0 && <Empty cols={5}>Nada pendiente en los próximos 7 días.</Empty>}
+                  {proximas?.map((p, i) => (
+                    <tr key={`${p.arete}-${p.proxima_fecha}-${i}`}>
+                      <td style={td}><b>{p.arete}</b></td>
+                      <td style={td}>{TIPO_SANIDAD[p.tipo] || p.tipo}</td>
+                      <td style={td}>{p.producto || '—'}</td>
+                      <td style={td}>{p.proxima_fecha}</td>
+                      <td style={{ ...td, color: p.vencida ? C.red : C.amber, fontWeight: 600 }}>
+                        {p.vencida ? `🔴 vencida ${haceDias(p.dias)}` : `🟡 ${enDias(p.dias)}`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+
+            <Card flex="1 1 380px">
+              <b style={{ fontSize: 14 }}>🥛 Retiro de leche vigente</b>
+              <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
+                <thead><tr><th style={th}>Arete</th><th style={th}>Producto</th><th style={th}>Hasta</th><th style={th}>Falta</th></tr></thead>
+                <tbody>
+                  {retiros === null && <Empty cols={4}>No se pudo cargar.</Empty>}
+                  {retiros?.length === 0 && <Empty cols={4}>Ninguna vaca en retiro. Leche apta.</Empty>}
+                  {retiros?.map((r, i) => (
+                    <tr key={`${r.arete}-${r.hasta}-${i}`}>
+                      <td style={td}><b>{r.arete}</b></td>
+                      <td style={td}>{r.producto || '—'}</td>
+                      <td style={td}>{r.hasta}</td>
+                      <td style={{ ...td, color: C.blue, fontWeight: 600 }}>{enDias(r.dias)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+
+            <Card flex="1 1 260px">
+              <b style={{ fontSize: 14 }}>🔍 Revisar preñez</b>
+              <p style={{ margin: '4px 0 8px', fontSize: 12, color: C.sub }}>
+                Servidas hace más de {PRENEZ_DIAS} días y aún sin diagnóstico.
+              </p>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr><th style={th}>Arete</th></tr></thead>
+                <tbody>
+                  {prenez === null && <Empty cols={1}>No se pudo cargar.</Empty>}
+                  {prenez?.length === 0 && <Empty cols={1}>Ninguna pendiente.</Empty>}
+                  {prenez?.map((arete) => (
+                    <tr key={arete}><td style={td}><b>{arete}</b></td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
           </div>
         </Section>
 
