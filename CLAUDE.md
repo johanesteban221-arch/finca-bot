@@ -37,7 +37,7 @@ are relative to it.**
 | Path | Contents |
 |---|---|
 | `src/` | Next.js 15 app — the active bot |
-| `db/` | Plain SQL for the Supabase SQL Editor |
+| `db/` | Plain SQL for the Supabase SQL Editor (`diagnostics/` and `maintenance/` sit outside the apply chain) |
 | `workflows/` | n8n workflow JSON (`GDP · WF-NN`) |
 | `docs/` | `README-ganaderia.md` and guides |
 
@@ -202,8 +202,25 @@ Apply SQL in this order in the Supabase SQL Editor (all files now live in `db/`)
 **No versioned migrations** — SQL is idempotent (`CREATE TABLE IF NOT EXISTS`,
 `CREATE OR REPLACE VIEW`). Preserve that idempotency in any new SQL.
 
-`db/diagnostics/` is **not** part of that chain: read-only `SELECT` scripts for
-investigating data, never applied as migrations.
+### Subfolders — outside the migration chain
+Neither is ever applied as a deployment step. Keep new scripts out of `db/`'s root so the
+apply order above stays unambiguous.
+
+| Folder | What goes in it | Rule |
+|---|---|---|
+| `db/diagnostics/` | Read-only `SELECT` scripts for investigating data | Must contain no write statement. `fechas_desfasadas_utc.sql` finds rows misdated by the pre-fix UTC bug. |
+| `db/maintenance/` | ⚠️ Destructive operational scripts | Ship them **disabled**: the real block stays commented out, preceded by a dry run wrapped in `begin … rollback`. `reset_datos.sql` empties the herd tables (keeps `fincas`, `whatsapp_users`, `whatsapp_user_fincas` and every `cat_*`). |
+
+Two things any script touching data must account for:
+- **Delete order.** `animales` is the FK root — six tables reference it, including itself
+  via `madre_id`/`padre_id`. Delete its children first, clear the self-references, then
+  `animales`. Do not lean on `ON DELETE CASCADE` to get the order right for you.
+- **RLS is fail-closed.** Under a role subject to RLS with `app.finca_id` unset, a `DELETE`
+  matches zero rows and looks like it succeeded. The Supabase SQL Editor runs as `postgres`
+  (BYPASSRLS) so it is unaffected — any other connection is not. Always verify with counts.
+
+Take a backup before running anything destructive: `GET /api/cron/backup?secret=CRON_SECRET`
+or `select * from vw_respaldo_completo;`, stored outside the database.
 
 ### Tables
 `✅` = exists today · `🎯` = target, not built
