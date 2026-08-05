@@ -34,10 +34,18 @@ export class FakeSupabase {
   readonly inserts: InsertLog[] = [];
   /** Every update performed, in order. */
   readonly updates: UpdateLog[] = [];
+  /** Tables configured to fail, for exercising error paths. */
+  readonly failures = new Map<string, string>();
   private seq = 0;
 
   constructor(seed: SeedTables = {}) {
     for (const [name, rows] of Object.entries(seed)) this.tables[name] = clone(rows);
+  }
+
+  /** Makes every query against `table` return a Supabase error instead of rows. */
+  failOn(table: string, message = 'conexión rechazada'): this {
+    this.failures.set(table, message);
+    return this;
   }
 
   rows(name: string): Row[] {
@@ -66,8 +74,15 @@ export class FakeSupabase {
 
 type Result = { data: any; error: { message: string } | null };
 
+// Range/negation filters. Kept separate from the `eq` tuples so UpdateLog keeps
+// its simple shape, which tests assert against directly.
+type RangeFilter = { op: 'gte' | 'lte' | 'gt' | 'lt' | 'notNull'; column: string; value: any };
+
 class Builder implements PromiseLike<Result> {
   private filters: [string, any][] = [];
+  private ranges: RangeFilter[] = [];
+  private orderBy: { column: string; ascending: boolean }[] = [];
+  private max: number | null = null;
   private op: 'select' | 'insert' | 'update' | 'upsert' = 'select';
   private payload: Row[] = [];
   private shape: 'list' | 'one' | 'maybe' = 'list';
@@ -85,12 +100,33 @@ class Builder implements PromiseLike<Result> {
     return this;
   }
 
-  // Ordering is not simulated: seed rows in the order the test expects to read them.
-  order(_column: string, _opts?: Record<string, unknown>): this {
+  // ISO date strings compare correctly with the relational operators, which is
+  // all these are used for (date windows).
+  gte(column: string, value: any): this { return this.range('gte', column, value); }
+  lte(column: string, value: any): this { return this.range('lte', column, value); }
+  gt(column: string, value: any): this { return this.range('gt', column, value); }
+  lt(column: string, value: any): this { return this.range('lt', column, value); }
+
+  /** Only the `.not(col, 'is', null)` form the alert queries use is supported. */
+  not(column: string, operator: string, value: any): this {
+    if (operator !== 'is' || value !== null) {
+      throw new Error(`fake-supabase: not(${operator}) no está soportado; agrégalo si lo necesitas`);
+    }
+    return this.range('notNull', column, null);
+  }
+
+  private range(op: RangeFilter['op'], column: string, value: any): this {
+    this.ranges.push({ op, column, value });
     return this;
   }
 
-  limit(_n: number): this {
+  order(column: string, opts?: { ascending?: boolean }): this {
+    this.orderBy.push({ column, ascending: opts?.ascending !== false });
+    return this;
+  }
+
+  limit(n: number): this {
+    this.max = n;
     return this;
   }
 
@@ -135,9 +171,27 @@ class Builder implements PromiseLike<Result> {
     return this.pending;
   }
 
-  private matches = (row: Row): boolean => this.filters.every(([c, v]) => row[c] === v);
+  // Resolves `animales.estado_reproductivo` against an embedded resource, the way
+  // PostgREST filters on a joined table. Seed such rows with the nested object.
+  private valueAt = (row: Row, path: string): any =>
+    path.split('.').reduce<any>((acc, key) => (acc == null ? undefined : acc[key]), row);
+
+  private matches = (row: Row): boolean =>
+    this.filters.every(([c, v]) => this.valueAt(row, c) === v) &&
+    this.ranges.every(({ op, column, value }) => {
+      const cell = this.valueAt(row, column);
+      if (op === 'notNull') return cell !== null && cell !== undefined;
+      if (cell === null || cell === undefined) return false;
+      if (op === 'gte') return cell >= value;
+      if (op === 'lte') return cell <= value;
+      if (op === 'gt') return cell > value;
+      return cell < value;
+    });
 
   private exec(): Result {
+    const failure = this.db.failures.get(this.name);
+    if (failure) return { data: null, error: { message: failure } };
+
     const table = this.db.rows(this.name);
 
     if (this.op === 'insert') {
@@ -173,7 +227,25 @@ class Builder implements PromiseLike<Result> {
       return this.wrap(written);
     }
 
-    return this.wrap(table.filter(this.matches));
+    return this.wrap(this.sortAndLimit(table.filter(this.matches)));
+  }
+
+  // Ordering matters for the alert queries — they are read in due-date order —
+  // so it is simulated rather than left to seed order. Nulls sort last, as in
+  // Postgres' default for ascending order.
+  private sortAndLimit(rows: Row[]): Row[] {
+    const out = rows.slice();
+    for (const { column, ascending } of [...this.orderBy].reverse()) {
+      out.sort((x, y) => {
+        const a = this.valueAt(x, column);
+        const b = this.valueAt(y, column);
+        if (a === b) return 0;
+        if (a === null || a === undefined) return 1;
+        if (b === null || b === undefined) return -1;
+        return (a < b ? -1 : 1) * (ascending ? 1 : -1);
+      });
+    }
+    return this.max === null ? out : out.slice(0, this.max);
   }
 
   private wrap(list: Row[]): Result {

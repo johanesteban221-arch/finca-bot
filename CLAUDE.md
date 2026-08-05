@@ -178,7 +178,9 @@ CREATE TABLE whatsapp_users (
 CREATE TABLE whatsapp_user_fincas (
   user_id   UUID REFERENCES whatsapp_users(id),
   finca_id  UUID REFERENCES fincas(id),
-  rol       TEXT CHECK (rol IN ('dueño','admin','veterinario','vaquero')),
+  -- Unaccented, matching the live whatsapp_users.rol CHECK in db/01_bot_schema.sql.
+  -- The cron filters on rol = 'dueno'; an accented value here would match nothing.
+  rol       TEXT CHECK (rol IN ('dueno','admin','veterinario','vaquero')),
   PRIMARY KEY (user_id, finca_id)
 );
 ```
@@ -286,6 +288,27 @@ from the naming scheme above.
       regression tests. Only Supabase and `fetch` are faked — see `tests/helpers/`.
 - [ ] **5. Meta template approval** — start Meta approval process for proactive alert templates
 
+### Dashboard backlog (from the review of `src/app/dashboard/page.tsx`)
+Detail tables for alerts, read-path error handling, and the sanidad/mortalidad sections
+are **done**. What was deliberately deferred:
+
+- [ ] **6. Filter dashboard queries by `finca_id`** — ⚠️ Phase 1 blocker. `analytics.ts` and
+      `alerts.ts` read every row of every table with no tenant filter, and RLS is dormant
+      under `service_role`, so there is no backstop. Harmless with one farm; breaks the day
+      a second one is onboarded.
+- [ ] **7. Bound the unpaginated queries** — `animales`, `pesajes` and `eventos_reproductivos`
+      are fetched whole and aggregated in JS. PostgREST caps rows per response (Supabase
+      commonly defaults to 1000); past that, GDP and IEP are silently computed on truncated
+      data. Verify the project's `max-rows` and paginate or push the aggregation into SQL.
+- [ ] **8. `produccion_leche` has no writer** — the milk section can never populate. Note the
+      contradiction to resolve: the dashboard placeholder promises a WhatsApp entry flow,
+      while the architecture decision above is hardware-only via the ESP32 endpoint. Fix one.
+- [ ] **9. "Sin 2º pesaje" undercounts** — `analytics.ts` only walks animals that already have
+      at least one weighing, so animals never weighed are invisible in the peso section.
+- [ ] **10. Promote the mortality cause to a column** — `flows/mortalidad.ts` writes it into
+      `movimientos.notas` as `"Causa: X"` and `analytics.ts` parses it back out with a regex.
+      A real `causa` column (FK to `cat_causas_mortalidad`) would remove the round trip.
+
 ---
 
 ## Secrets — hard rules
@@ -338,13 +361,26 @@ from the naming scheme above.
 `npm test` (Vitest, run mode) · `npm run test:watch`. Test-only dependency — the Docker
 production build is untouched.
 
-- `tests/helpers/fake-supabase.ts` — in-memory Supabase covering the query surface the bot
-  uses. Extend it when a flow starts using a new query shape.
+- `tests/helpers/fake-supabase.ts` — in-memory Supabase covering the query surface the app
+  uses: `eq/gte/lte/gt/lt/not(is,null)`, `order`, `limit`, dotted paths for embedded
+  resources (`animales.estado_reproductivo`), and `failOn(table)` to exercise error paths.
+  Extend it when a query starts using a new shape.
 - `tests/helpers/harness.ts` — stubs global `fetch` to capture outgoing Meta payloads,
   freezes the clock, seeds catalogs.
 - Flow tests run through `handleMessage`, the same entry point as the webhook, so routing
   and session persistence are covered too. Add new flows here as they land.
+- `tests/lib/dashboard.test.ts` renders the server component to static HTML — that is what
+  verifies the dashboard actually degrades instead of showing zeros.
 - Both flow suites assert `finca_id` on every written row — keep that guard.
+
+### Read-path error contract
+Supabase reports failures in `error` rather than throwing, so `data || []` turns a broken
+query into a convincing empty result. Every read goes through `unwrapList()` in
+`src/lib/supabase.ts`, which throws. Callers decide how to degrade:
+- **Dashboard** — `Promise.allSettled`, a warning banner, and «—» instead of 0.
+- **`cron/daily-alerts`** — aborts with a 500 before sending anything. An alert claiming
+  "nada pendiente" because the DB was unreachable would send milk from a cow still in its
+  withdrawal period.
 
 ---
 
@@ -357,6 +393,7 @@ production build is untouched.
 ---
 
 *Last updated: tasks #2 and #4 done — multi-tenant schema applied, Vitest suite added,
-farm-timezone date bug fixed.*
+farm-timezone date bug fixed. Dashboard: alert detail, read-path error handling and
+sanidad/mortalidad sections added; items 6–10 deferred.*
 *Sections marked 🎯 are decided design, not implemented — verify against code before relying on them.*
 *Full project brief: `docs/README-ganaderia.md` (⚠️ outdated — describes n8n as primary).*

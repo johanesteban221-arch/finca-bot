@@ -17,7 +17,8 @@ export const TODAY = '2026-08-04';
 // ---------------------------------------------------------------------
 export function baseSeed(overrides: SeedTables = {}): SeedTables {
   return {
-    whatsapp_users: [{ telefono: PHONE, nombre: 'Johan', rol: 'dueño', activo: true }],
+    // `rol` values are unaccented in the real schema (db/01_bot_schema.sql).
+    whatsapp_users: [{ telefono: PHONE, nombre: 'Johan', rol: 'dueno', activo: true }],
     whatsapp_sessions: [],
     animales: [],
     eventos_sanitarios: [],
