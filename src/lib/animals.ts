@@ -13,22 +13,35 @@ export async function findAnimal(arete: string): Promise<any | null> {
   return data;
 }
 
+/** An animal resolved from an arete, plus whether this call had to create it. */
+export type AnimalResuelto = { id: string; creado: boolean };
+
 // Finds the animal by arete; creates a minimal record if it doesn't exist yet.
 // `origen` is a Spanish noun phrase used in the audit note, e.g. 'un pesaje'.
-export async function findOrCreateAnimal(arete: string, origen: string): Promise<string | undefined> {
-  const { data: animal } = await supabase
+//
+// `creado` matters to the caller: on WhatsApp, auto-creating from a typo is an
+// acceptable trade (the vaquero is in the field and cannot fix it there), but a
+// dashboard form should surface it and ask for confirmation.
+export async function findOrCreateAnimal(arete: string, origen: string): Promise<AnimalResuelto> {
+  const { data: animal, error: findError } = await supabase
     .from('animales')
     .select('id')
     .eq('arete', arete)
     .maybeSingle();
-  if (animal) return animal.id;
+  if (findError) throw new Error(`buscar animal ${arete}: ${findError.message}`);
+  if (animal) return { id: animal.id, creado: false };
 
-  const { data: nuevo } = await supabase
+  const { data: nuevo, error: insertError } = await supabase
     .from('animales')
     .insert({ finca_id: FINCA_ID, arete, sexo: 'H', notas: `Creado automáticamente desde ${origen} por WhatsApp` })
     .select('id')
     .single();
-  return nuevo?.id;
+  // Returning undefined here used to cascade into an insert with a null
+  // animal_id, which fails far from the real cause.
+  if (insertError || !nuevo?.id) {
+    throw new Error(`crear animal ${arete}: ${insertError?.message ?? 'sin id devuelto'}`);
+  }
+  return { id: nuevo.id, creado: true };
 }
 
 // Animal categories (dual-purpose cattle lifecycle stages).

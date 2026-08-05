@@ -10,16 +10,17 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.48.1",
     "next": "15.1.6",
     "react": "19.0.0",
     "react-dom": "19.0.0",
-    "@supabase/supabase-js": "^2.48.1"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
-    "typescript": "^5.7.3",
     "@types/node": "^22.10.7",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
+    "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   }
 }

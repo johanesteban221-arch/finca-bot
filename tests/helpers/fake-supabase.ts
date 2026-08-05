@@ -53,9 +53,15 @@ export class FakeSupabase {
     return this.tables[name];
   }
 
-  /** Deterministic surrogate key so assertions can name ids (`animales-1`). */
-  nextId(table: string): string {
-    return `${table}-${++this.seq}`;
+  /**
+   * Deterministic but validly-shaped uuid. Postgres generates real uuids via
+   * gen_random_uuid(), and the domain schemas validate ids as uuid, so a
+   * readable fake id like `animales-1` would make the fake diverge from
+   * production in a way that hides real failures. The sequence keeps it stable
+   * across runs; tests compare ids by reference, not by literal.
+   */
+  nextId(_table: string): string {
+    return `00000000-0000-4000-8000-${(++this.seq).toString(16).padStart(12, '0')}`;
   }
 
   from(name: string): Builder {

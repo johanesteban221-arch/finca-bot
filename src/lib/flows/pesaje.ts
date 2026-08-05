@@ -4,9 +4,7 @@
 
 import { sendText, sendButtons, sendList } from '../whatsapp';
 import { saveSession, clearSession } from '../session';
-import { supabase } from '../supabase';
-import { findOrCreateAnimal } from '../animals';
-import { FINCA_ID } from '../tenant';
+import { registrarPesaje } from '../domain/pesajes';
 import {
   Flow, today, inputOf, validArete, goToStep, sendConfirm, confirmBody,
   MSG_INVALID_ARETE, MSG_DESYNC, MSG_MENU_HINT, MSG_CANCEL_LONG,
@@ -81,7 +79,9 @@ export const pesaje: Flow = {
     // Step 5: confirmación
     if (session.current_step === 5) {
       if (input === 'conf:si') {
-        await savePesaje(t);
+        await registrarPesaje({
+          arete: t.arete, peso: t.peso, tipo: t.tipo, condicionCorporal: t.cc,
+        });
         await clearSession(to);
         const ccTxt = t.cc ? ` · CC ${t.cc}/5` : '';
         return void sendText(
@@ -101,14 +101,3 @@ export const pesaje: Flow = {
   },
 };
 
-async function savePesaje(t: Record<string, any>): Promise<void> {
-  const animalId = await findOrCreateAnimal(t.arete, 'un pesaje');
-  await supabase.from('pesajes').insert({
-    finca_id: FINCA_ID,
-    animal_id: animalId,
-    fecha: today(),
-    peso_kg: t.peso,
-    tipo: t.tipo,
-    condicion_corporal: t.cc ?? null,
-  });
-}

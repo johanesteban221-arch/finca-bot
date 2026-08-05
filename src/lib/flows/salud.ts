@@ -4,12 +4,10 @@
 import { Incoming, sendText, sendButtons, sendList } from '../whatsapp';
 import { Session, saveSession, clearSession } from '../session';
 import { getCatalog } from '../catalogs';
-import { supabase } from '../supabase';
-import { findOrCreateAnimal } from '../animals';
-import { FINCA_ID } from '../tenant';
+import { registrarVacunacion, registrarTratamiento, registrarDesparasitacion } from '../domain/sanidad';
 import { showMenu } from '../menu';
 import {
-  Flow, today, addDays, inputOf, validArete, goToStep, sendConfirm, confirmBody,
+  Flow, today, inputOf, validArete, goToStep, sendConfirm, confirmBody,
   MSG_INVALID_ARETE, MSG_DESYNC, MSG_MENU_HINT, MSG_CANCEL_LONG,
 } from '../state-machine';
 
@@ -103,9 +101,11 @@ export const vacunacion: Flow = {
     // Step 4: confirmación
     if (session.current_step === 4) {
       if (input === 'conf:si') {
-        const proxima = await saveVacunacion(t);
+        const { proximaFecha } = await registrarVacunacion({
+          arete: t.arete, vacuna: t.vacuna, dosis: t.dosis,
+        });
         await clearSession(to);
-        const extra = proxima ? `\n⏭ Próxima: ${proxima}` : '';
+        const extra = proximaFecha ? `\n⏭ Próxima: ${proximaFecha}` : '';
         return void sendText(
           to,
           `✅ Vacunación guardada\n🐄 Arete ${t.arete} — ${t.vacuna} ${t.dosis}\n📅 ${today()}${extra}${MSG_MENU_HINT}`,
@@ -123,32 +123,6 @@ export const vacunacion: Flow = {
     return void sendText(to, MSG_DESYNC);
   },
 };
-
-// Persists the vaccination, creating a minimal animal if the arete is new.
-// Returns the next-dose date when the vaccine catalog defines a default interval.
-async function saveVacunacion(t: Record<string, any>): Promise<string | null> {
-  const animalId = await findOrCreateAnimal(t.arete, 'una vacunación');
-
-  const { data: vac } = await supabase
-    .from('cat_vacunas')
-    .select('retiro_default_dias')
-    .eq('nombre', t.vacuna)
-    .maybeSingle();
-
-  const proxima = vac?.retiro_default_dias ? addDays(vac.retiro_default_dias) : null;
-
-  await supabase.from('eventos_sanitarios').insert({
-    finca_id: FINCA_ID,
-    animal_id: animalId,
-    tipo: 'vacuna',
-    fecha: today(),
-    producto: t.vacuna,
-    dosis: t.dosis,
-    proxima_fecha: proxima,
-  });
-
-  return proxima;
-}
 
 // =====================================================================
 // Flow: Tratamiento
@@ -230,9 +204,12 @@ export const tratamiento: Flow = {
     // Step 6: confirmación
     if (session.current_step === 6) {
       if (input === 'conf:si') {
-        const retiro = await saveTratamiento(t);
+        const { retiroLecheHasta } = await registrarTratamiento({
+          arete: t.arete, diagnostico: t.diagnostico, medicamento: t.medicamento,
+          dosis: t.dosis, via: t.via,
+        });
         await clearSession(to);
-        const extra = retiro ? `\n🥛 Retiro de leche hasta: ${retiro}` : '';
+        const extra = retiroLecheHasta ? `\n🥛 Retiro de leche hasta: ${retiroLecheHasta}` : '';
         return void sendText(
           to,
           `✅ Tratamiento guardado\n🐄 Arete ${t.arete} — ${t.diagnostico}\n💊 ${t.medicamento} ${t.dosis} (${t.via})\n📅 ${today()}${extra}${MSG_MENU_HINT}`,
@@ -249,26 +226,6 @@ export const tratamiento: Flow = {
     return void sendText(to, MSG_DESYNC);
   },
 };
-
-// Persists the treatment; computes the milk-withdrawal date from the medicine catalog.
-async function saveTratamiento(t: Record<string, any>): Promise<string | null> {
-  const animalId = await findOrCreateAnimal(t.arete, 'un tratamiento');
-  const retiro = await retiroLecheHasta(t.medicamento);
-
-  await supabase.from('eventos_sanitarios').insert({
-    finca_id: FINCA_ID,
-    animal_id: animalId,
-    tipo: 'tratamiento',
-    fecha: today(),
-    producto: t.medicamento,
-    dosis: t.dosis,
-    via: t.via,
-    diagnostico: t.diagnostico,
-    retiro_leche_hasta: retiro,
-  });
-
-  return retiro;
-}
 
 // =====================================================================
 // Flow: Desparasitación
@@ -340,11 +297,13 @@ export const desparasitacion: Flow = {
     // Step 4: confirmación
     if (session.current_step === 4) {
       if (input === 'conf:si') {
-        const proxima = await saveDesparasitacion(t);
+        const { proximaFecha } = await registrarDesparasitacion({
+          arete: t.arete, producto: t.producto, dosis: t.dosis,
+        });
         await clearSession(to);
         return void sendText(
           to,
-          `✅ Desparasitación guardada\n🐄 Arete ${t.arete} — ${t.producto} ${t.dosis}\n📅 ${today()}\n⏭ Próxima sugerida: ${proxima}${MSG_MENU_HINT}`,
+          `✅ Desparasitación guardada\n🐄 Arete ${t.arete} — ${t.producto} ${t.dosis}\n📅 ${today()}\n⏭ Próxima sugerida: ${proximaFecha}${MSG_MENU_HINT}`,
         );
       }
       if (input === 'conf:no') {
@@ -359,32 +318,3 @@ export const desparasitacion: Flow = {
   },
 };
 
-async function saveDesparasitacion(t: Record<string, any>): Promise<string> {
-  const animalId = await findOrCreateAnimal(t.arete, 'una desparasitación');
-  const retiro = await retiroLecheHasta(t.producto);
-  const proxima = addDays(90); // dewormings are typically every ~3 months
-
-  await supabase.from('eventos_sanitarios').insert({
-    finca_id: FINCA_ID,
-    animal_id: animalId,
-    tipo: 'desparasitacion',
-    fecha: today(),
-    producto: t.producto,
-    dosis: t.dosis,
-    proxima_fecha: proxima,
-    retiro_leche_hasta: retiro,
-  });
-  return proxima;
-}
-
-// Milk-withdrawal date for a product, from the medicine catalog. Null when the
-// product has no withdrawal period (or isn't in the catalog at all).
-async function retiroLecheHasta(producto: string): Promise<string | null> {
-  const { data: med } = await supabase
-    .from('cat_medicamentos')
-    .select('retiro_horas_default')
-    .eq('nombre', producto)
-    .maybeSingle();
-  const horas = med?.retiro_horas_default || 0;
-  return horas > 0 ? addDays(Math.ceil(horas / 24)) : null;
-}

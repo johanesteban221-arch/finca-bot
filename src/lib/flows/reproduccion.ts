@@ -4,9 +4,8 @@
 import { sendText, sendButtons, sendList } from '../whatsapp';
 import { Session, saveSession, clearSession } from '../session';
 import { getCatalog } from '../catalogs';
-import { supabase } from '../supabase';
-import { findAnimal, findOrCreateAnimal, sexoTitle } from '../animals';
-import { FINCA_ID } from '../tenant';
+import { registrarServicio, registrarDxPrenez, registrarParto } from '../domain/reproduccion';
+import { sexoTitle } from '../animals';
 import { showMenu } from '../menu';
 import {
   Flow, today, inputOf, validArete, goToStep, sendConfirm, confirmBody,
@@ -119,7 +118,10 @@ export const servicio: Flow = {
     // Step 5: confirmación
     if (session.current_step === 5) {
       if (input === 'conf:si') {
-        await saveServicio(t);
+        await registrarServicio({
+          arete: t.arete, metodo: t.metodo,
+          inseminador: t.inseminador, pajilla: t.pajilla, toro: t.toro,
+        });
         await clearSession(to);
         return void sendText(
           to,
@@ -140,21 +142,6 @@ export const servicio: Flow = {
 
 // Free-text optional fields accept the literal NINGUNO to mean "not recorded".
 const ningunoOr = (v: string) => (/^ninguno$/i.test(v) ? null : v);
-
-async function saveServicio(t: Record<string, any>): Promise<void> {
-  const animalId = await findOrCreateAnimal(t.arete, 'un servicio');
-  await supabase.from('eventos_reproductivos').insert({
-    finca_id: FINCA_ID,
-    animal_id: animalId,
-    tipo: 'servicio',
-    fecha: today(),
-    metodo: t.metodo,
-    inseminador: t.metodo === 'IA' ? t.inseminador : null,
-    pajilla: t.metodo === 'IA' ? t.pajilla : null,
-    notas: t.metodo === 'monta' && t.toro ? `Toro: ${t.toro}` : null,
-  });
-  await supabase.from('animales').update({ estado_reproductivo: 'servida' }).eq('id', animalId);
-}
 
 // =====================================================================
 // Flow: Diagnóstico de preñez
@@ -193,17 +180,7 @@ export const dxPrenez: Flow = {
     // Step 3: confirmación
     if (session.current_step === 3) {
       if (input === 'conf:si') {
-        const animalId = await findOrCreateAnimal(t.arete, 'un diagnóstico');
-        await supabase.from('eventos_reproductivos').insert({
-          finca_id: FINCA_ID,
-          animal_id: animalId,
-          tipo: 'diagnostico_prenez',
-          fecha: today(),
-          resultado: t.resultado,
-        });
-        await supabase.from('animales')
-          .update({ estado_reproductivo: t.resultado === 'prenada' ? 'prenada' : 'vacia' })
-          .eq('id', animalId);
+        await registrarDxPrenez({ arete: t.arete, resultado: t.resultado });
         await clearSession(to);
         return void sendText(
           to,
@@ -289,7 +266,7 @@ export const parto: Flow = {
     // Step 5: confirmación
     if (session.current_step === 5) {
       if (input === 'conf:si') {
-        await saveParto(t);
+        await registrarParto({ madre: t.madre, cria: t.cria, sexo: t.sexo, peso: t.peso });
         await clearSession(to);
         return void sendText(
           to,
@@ -308,43 +285,3 @@ export const parto: Flow = {
   },
 };
 
-async function saveParto(t: Record<string, any>): Promise<void> {
-  const madreId = await findOrCreateAnimal(t.madre, 'un parto');
-
-  // Create (or reuse) the calf, linking genealogy to the dam.
-  let cria = await findAnimal(t.cria);
-  if (!cria) {
-    const { data: nueva } = await supabase
-      .from('animales')
-      .insert({
-        finca_id: FINCA_ID,
-        arete: t.cria,
-        sexo: t.sexo,
-        madre_id: madreId,
-        fecha_nacimiento: today(),
-        peso_nacimiento: t.peso ?? null,
-        origen: 'nacido_en_finca',
-        categoria: 'ternero',
-        notas: 'Registrada desde un parto por WhatsApp',
-      })
-      .select('id')
-      .single();
-    cria = nueva;
-  }
-
-  // Birth weight also recorded as a weighing for the calf's weight history.
-  if (t.peso && cria?.id) {
-    await supabase.from('pesajes').insert({
-      finca_id: FINCA_ID, animal_id: cria.id, fecha: today(), peso_kg: t.peso, tipo: 'nacimiento',
-    });
-  }
-
-  await supabase.from('eventos_reproductivos').insert({
-    finca_id: FINCA_ID,
-    animal_id: madreId,
-    tipo: 'parto',
-    fecha: today(),
-    cria_id: cria?.id ?? null,
-  });
-  await supabase.from('animales').update({ estado_reproductivo: 'parida' }).eq('id', madreId);
-}
