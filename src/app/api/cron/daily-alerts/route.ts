@@ -21,24 +21,37 @@ export async function GET(req: NextRequest) {
   const hoy = today();
   const ayer = shift(-1);
 
-  const [prox, retiros, prenez] = await Promise.all([getProximas(), getRetiros(), getPrenezPendientes()]);
-
   // Yesterday's activity counts.
   const countYesterday = async (table: string, extra: Record<string, string> = {}) => {
     let q = supabase.from(table).select('id', { count: 'exact', head: true }).eq('fecha', ayer);
     for (const [k, v] of Object.entries(extra)) q = q.eq(k, v);
-    const { count } = await q;
+    const { count, error } = await q;
+    if (error) throw new Error(`conteo de ${table}: ${error.message}`);
     return count || 0;
   };
-  const [vac, trat, desp, pes, serv, parto, muertes] = await Promise.all([
-    countYesterday('eventos_sanitarios', { tipo: 'vacuna' }),
-    countYesterday('eventos_sanitarios', { tipo: 'tratamiento' }),
-    countYesterday('eventos_sanitarios', { tipo: 'desparasitacion' }),
-    countYesterday('pesajes'),
-    countYesterday('eventos_reproductivos', { tipo: 'servicio' }),
-    countYesterday('eventos_reproductivos', { tipo: 'parto' }),
-    countYesterday('movimientos', { tipo: 'muerte' }),
-  ]);
+
+  // Gather everything before sending anything. A failed query must abort the
+  // whole run: an alert that says "nada pendiente" because the database was
+  // unreachable is worse than no alert at all — the owner would ship milk from
+  // a cow still inside its withdrawal period.
+  let prox, retiros, prenez;
+  let vac, trat, desp, pes, serv, parto, muertes;
+  try {
+    [prox, retiros, prenez] = await Promise.all([getProximas(), getRetiros(), getPrenezPendientes()]);
+    [vac, trat, desp, pes, serv, parto, muertes] = await Promise.all([
+      countYesterday('eventos_sanitarios', { tipo: 'vacuna' }),
+      countYesterday('eventos_sanitarios', { tipo: 'tratamiento' }),
+      countYesterday('eventos_sanitarios', { tipo: 'desparasitacion' }),
+      countYesterday('pesajes'),
+      countYesterday('eventos_reproductivos', { tipo: 'servicio' }),
+      countYesterday('eventos_reproductivos', { tipo: 'parto' }),
+      countYesterday('movimientos', { tipo: 'muerte' }),
+    ]);
+  } catch (e) {
+    const detalle = e instanceof Error ? e.message : String(e);
+    console.error('[cron/daily-alerts] no se pudo calcular las alertas:', detalle);
+    return NextResponse.json({ ok: false, fecha: hoy, error: detalle }, { status: 500 });
+  }
 
   // ---- Build the message ----
   const proxLineas = prox.length
@@ -67,11 +80,16 @@ export async function GET(req: NextRequest) {
     `Escribe *menú* para registrar o consultar. 🐄`;
 
   // ---- Recipients: active owners ----
-  const { data: duenos } = await supabase
+  const { data: duenos, error: duenosError } = await supabase
     .from('whatsapp_users')
     .select('telefono')
     .eq('rol', 'dueno')
     .eq('activo', true);
+
+  if (duenosError) {
+    console.error('[cron/daily-alerts] no se pudo leer destinatarios:', duenosError.message);
+    return NextResponse.json({ ok: false, fecha: hoy, error: duenosError.message }, { status: 500 });
+  }
 
   const destinatarios = (duenos || []).map((u: any) => u.telefono);
 

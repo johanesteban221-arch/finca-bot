@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { supabase, unwrapList } from './supabase';
 import { today, addDays, shiftDate, daysBetween } from './dates';
 
 // Zootechnical analytics for the meeting dashboard: productive (weight/milk) and
@@ -6,6 +6,14 @@ import { today, addDays, shiftDate, daysBetween } from './dates';
 // from the raw event tables.
 
 const GESTACION_DIAS = 283; // average bovine gestation
+const SANIDAD_DIAS = 90;    // rolling window for the health summary
+const ANIO_DIAS = 365;
+
+// The mortalidad flow has no `causa` column to write to — it stores the cause
+// inside `movimientos.notas` as "Causa: X" (see flows/mortalidad.ts). Parse it
+// back out here. Promoting it to a real column is pending (see CLAUDE.md).
+const causaDeNotas = (notas: string | null | undefined): string =>
+  (notas || '').replace(/^causa:\s*/i, '').trim() || 'Sin causa registrada';
 
 const avg = (xs: number[]): number | null => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 const round = (x: number | null, dp = 0): number | null =>
@@ -19,6 +27,8 @@ function groupCount<T>(items: T[], key: (x: T) => string): Record<string, number
 
 export type PesoRow = { arete: string; categoria: string; pesoActual: number; gdp: number | null; nPesajes: number };
 export type ProxParto = { arete: string; fechaEstimada: string; diasRestantes: number };
+export type EventoSanitario = { arete: string; tipo: string; producto: string; diagnostico: string | null; fecha: string };
+export type Muerte = { arete: string; causa: string; fecha: string };
 
 export type Analytics = {
   inventario: {
@@ -45,19 +55,38 @@ export type Analytics = {
     hayDatos: boolean;
     totalLitros30d: number; promLitrosDia: number | null; vacasEnOrdeno: number; promPorVacaDia: number | null;
   };
+  sanidad: {
+    ventanaDias: number;                        // rolling window these figures cover
+    total: number;                              // events in the window
+    porTipo: Record<string, number>;            // vacuna / tratamiento / desparasitacion / revision
+    diagnosticosTop: { diagnostico: string; n: number }[];
+    recientes: EventoSanitario[];
+  };
+  mortalidad: {
+    total: number;                              // all time
+    ultimos12Meses: number;
+    tasaAnualPct: number | null;                // approximate, see the comment at the call site
+    porCausa: Record<string, number>;           // last 12 months
+    recientes: Muerte[];
+  };
 };
 
 export async function getAnalytics(): Promise<Analytics> {
-  const [aRes, pRes, rRes, lRes] = await Promise.all([
+  const [aRes, pRes, rRes, lRes, sRes, mRes] = await Promise.all([
     supabase.from('animales').select('id, arete, sexo, categoria, estado, estado_reproductivo'),
     supabase.from('pesajes').select('animal_id, fecha, peso_kg, tipo').order('fecha', { ascending: true }),
     supabase.from('eventos_reproductivos').select('animal_id, tipo, fecha, resultado').order('fecha', { ascending: true }),
     supabase.from('produccion_leche').select('animal_id, fecha, litros').gte('fecha', addDays(-30)),
+    supabase.from('eventos_sanitarios').select('animal_id, tipo, fecha, producto, diagnostico').gte('fecha', addDays(-SANIDAD_DIAS)),
+    supabase.from('movimientos').select('animal_id, fecha, notas').eq('tipo', 'muerte'),
   ]);
-  const animales = aRes.data || [];
-  const pesajes = pRes.data || [];
-  const repro = rRes.data || [];
-  const leche = lRes.data || [];
+  // A failed query must not read as "no hay datos" — see unwrapList.
+  const animales = unwrapList<any>(aRes, 'animales');
+  const pesajes = unwrapList<any>(pRes, 'pesajes');
+  const repro = unwrapList<any>(rRes, 'eventos_reproductivos');
+  const leche = unwrapList<any>(lRes, 'produccion_leche');
+  const sanitarios = unwrapList<any>(sRes, 'eventos_sanitarios');
+  const muertes = unwrapList<any>(mRes, 'movimientos');
 
   const areteOf = new Map<string, string>();
   const catOf = new Map<string, string>();
@@ -184,5 +213,47 @@ export async function getAnalytics(): Promise<Analytics> {
     promPorVacaDia: vacasEnOrdeno && diasConRegistro ? round(totalLitros30d / diasConRegistro / vacasEnOrdeno, 1) : null,
   };
 
-  return { inventario, reproductivo, peso, leche: lecheData };
+  // ---------- Sanidad (ventana móvil de SANIDAD_DIAS) ----------
+  const porFechaDesc = <T extends { fecha: string }>(xs: T[]) =>
+    xs.slice().sort((x, y) => y.fecha.localeCompare(x.fecha));
+
+  const sanidad = {
+    ventanaDias: SANIDAD_DIAS,
+    total: sanitarios.length,
+    porTipo: groupCount(sanitarios, (e) => e.tipo || 'otro'),
+    diagnosticosTop: Object.entries(
+      groupCount(sanitarios.filter((e) => e.diagnostico), (e) => e.diagnostico as string),
+    )
+      .map(([diagnostico, n]) => ({ diagnostico, n }))
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 6),
+    recientes: porFechaDesc(sanitarios).slice(0, 8).map((e) => ({
+      arete: areteOf.get(e.animal_id) || '?',
+      tipo: e.tipo,
+      producto: e.producto || '',
+      diagnostico: e.diagnostico ?? null,
+      fecha: e.fecha,
+    })),
+  };
+
+  // ---------- Mortalidad ----------
+  const desdeUnAnio = shiftDate(hoy, -ANIO_DIAS);
+  const muertes12 = muertes.filter((m) => m.fecha >= desdeUnAnio);
+  // Approximate annual rate: deaths in the window over the population that was
+  // exposed during it (animals alive now + those that died). A proper rate needs
+  // average inventory over time, which we do not track historically.
+  const expuestos = activos.length + muertes12.length;
+  const mortalidad = {
+    total: muertes.length,
+    ultimos12Meses: muertes12.length,
+    tasaAnualPct: expuestos ? round((muertes12.length / expuestos) * 100, 1) : null,
+    porCausa: groupCount(muertes12, (m) => causaDeNotas(m.notas)),
+    recientes: porFechaDesc(muertes).slice(0, 8).map((m) => ({
+      arete: areteOf.get(m.animal_id) || '?',
+      causa: causaDeNotas(m.notas),
+      fecha: m.fecha,
+    })),
+  };
+
+  return { inventario, reproductivo, peso, leche: lecheData, sanidad, mortalidad };
 }
