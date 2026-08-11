@@ -5,6 +5,7 @@ import { sendText } from '../whatsapp';
 import { saveSession, clearSession } from '../session';
 import { supabase } from '../supabase';
 import { findAnimal, sexoTitle } from '../animals';
+import { getRechequeosPendientes } from '../alerts';
 import {
   Flow, today, addDays, validArete, SEP, MSG_INVALID_ARETE,
 } from '../state-machine';
@@ -87,9 +88,23 @@ export async function showAlertas(to: string): Promise<void> {
     ? (retiros || []).map((r: any) => `🥛 Arete ${r.animales?.arete || '?'} — ${r.producto || ''} hasta ${r.retiro_leche_hasta}`).join('\n')
     : '_Sin retiros de leche activos._';
 
+  // getRechequeosPendientes lanza si la consulta falla (contrato de lectura de
+  // alerts.ts). Aquí eso no debe tumbar el resto del mensaje: el vaquero pidió
+  // las alertas y las dos secciones de arriba ya están listas. Se degrada la
+  // sección y se dice que se degradó — nunca se muestra vacía.
+  let recheLineas: string;
+  try {
+    const rechequeos = await getRechequeosPendientes();
+    recheLineas = rechequeos.length
+      ? rechequeos.map((r) => `🔁 Arete ${r.arete} — desde ${r.fecha} (${r.dias} días)`).join('\n')
+      : '_Ninguno pendiente._';
+  } catch {
+    recheLineas = '_No se pudo consultar._';
+  }
+
   await sendText(
     to,
-    `⚠️ *Alertas activas*\n${SEP}\n📅 *Próximas / vencidas (7 días):*\n${proxLineas}\n\n🥛 *Retiro de leche vigente:*\n${retLineas}\n\nEscribe *menú* para volver.`,
+    `⚠️ *Alertas activas*\n${SEP}\n📅 *Próximas / vencidas (7 días):*\n${proxLineas}\n\n🥛 *Retiro de leche vigente:*\n${retLineas}\n\n🔁 *Rechequeo pendiente:*\n${recheLineas}\n\nEscribe *menú* para volver.`,
   );
 }
 

@@ -3,12 +3,29 @@
 import { supabase } from './supabase';
 import { FINCA_ID } from './tenant';
 
+// Columns the animal record shows. Kept in one place so the WhatsApp ficha and
+// the dashboard ficha cannot drift apart.
+const CAMPOS_FICHA =
+  'id, arete, nombre, sexo, raza, categoria, estado, estado_reproductivo, ' +
+  'registro_oficial, fecha_nacimiento, foto_url';
+
 // Finds an animal by arete (read-only). Returns null when it doesn't exist.
 export async function findAnimal(arete: string): Promise<any | null> {
   const { data } = await supabase
     .from('animales')
-    .select('id, arete, nombre, sexo, raza, categoria, estado, estado_reproductivo')
+    .select(CAMPOS_FICHA)
     .eq('arete', arete)
+    .maybeSingle();
+  return data;
+}
+
+// Reverse of findAnimal: the protocol functions hold an animal_id and need the
+// arete back to call the event-recording domain functions, which key on arete.
+export async function findAnimalById(id: string): Promise<any | null> {
+  const { data } = await supabase
+    .from('animales')
+    .select(CAMPOS_FICHA)
+    .eq('id', id)
     .maybeSingle();
   return data;
 }

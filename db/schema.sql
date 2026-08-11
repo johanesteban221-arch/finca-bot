@@ -172,6 +172,13 @@ create unique index if not exists uq_pend_telefono_activa
 -- ============================================================================
 -- 8) vw_historial_animal  -  unified timeline of everything an animal has done
 --    Powers the "muestrame todo de la vaca <arete>" query.
+--
+--    ⚠️ THIS IS THE BASE DEFINITION, NOT THE FINAL ONE. db/03_hoja_de_vida.sql
+--       replaces it at the end of the apply chain with the version that also
+--       covers chequeos_reproductivos and protocolo_aplicaciones and exposes
+--       finca_id / ref_id. It cannot live here: those tables do not exist yet at
+--       this point in the chain. If you re-run this file on its own, re-run 03
+--       afterwards or the animal's history loses its newest event types.
 -- ============================================================================
 create or replace view vw_historial_animal as
   select animal_id, fecha, 'reproductivo'::text as categoria,

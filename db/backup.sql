@@ -15,6 +15,10 @@ create table if not exists respaldos (
 );
 create index if not exists idx_respaldos_created on respaldos(created_at desc);
 
+-- ⚠️ BASE DEFINITION ONLY. db/03_hoja_de_vida.sql replaces this view at the end
+--    of the apply chain to also dump chequeos_reproductivos,
+--    protocolos_sincronizacion, protocolo_aplicaciones and controles_leche.
+--    Re-running this file on its own leaves those four out of every backup.
 create or replace view vw_respaldo_completo as
 select jsonb_build_object(
   'animales',              (select coalesce(jsonb_agg(t), '[]'::jsonb) from animales t),

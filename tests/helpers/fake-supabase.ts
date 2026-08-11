@@ -2,9 +2,11 @@
 // bot actually uses:
 //   from().select().eq().order()             -> list
 //   from().select().eq().maybeSingle()       -> row | null
+//   from().select().in()                     -> list (bulk arete lookup)
 //   from().insert().select().single()        -> created row
 //   from().update().eq()                     -> patch matching rows
 //   from().upsert()                          -> insert-or-merge on the table's PK
+//   from().delete().eq()                     -> drop matching rows
 //
 // Deliberately NOT simulated: column projection (`select('id, arete')` returns the
 // whole row) and RLS. Projection is irrelevant to flow logic, and RLS is bypassed in
@@ -27,6 +29,7 @@ const PRIMARY_KEYS: Record<string, string> = {
 
 export type InsertLog = { table: string; rows: Row[] };
 export type UpdateLog = { table: string; patch: Row; filters: [string, any][] };
+export type DeleteLog = { table: string; filters: [string, any][]; rows: Row[] };
 
 export class FakeSupabase {
   readonly tables: Record<string, Row[]> = {};
@@ -34,6 +37,8 @@ export class FakeSupabase {
   readonly inserts: InsertLog[] = [];
   /** Every update performed, in order. */
   readonly updates: UpdateLog[] = [];
+  /** Every delete performed, in order — used to assert compensating cleanups. */
+  readonly deletes: DeleteLog[] = [];
   /** Tables configured to fail, for exercising error paths. */
   readonly failures = new Map<string, string>();
   private seq = 0;
@@ -76,20 +81,24 @@ export class FakeSupabase {
   updatesTo(table: string): UpdateLog[] {
     return this.updates.filter((u) => u.table === table);
   }
+
+  deletesFrom(table: string): DeleteLog[] {
+    return this.deletes.filter((d) => d.table === table);
+  }
 }
 
 type Result = { data: any; error: { message: string } | null };
 
 // Range/negation filters. Kept separate from the `eq` tuples so UpdateLog keeps
 // its simple shape, which tests assert against directly.
-type RangeFilter = { op: 'gte' | 'lte' | 'gt' | 'lt' | 'notNull'; column: string; value: any };
+type RangeFilter = { op: 'gte' | 'lte' | 'gt' | 'lt' | 'notNull' | 'in'; column: string; value: any };
 
 class Builder implements PromiseLike<Result> {
   private filters: [string, any][] = [];
   private ranges: RangeFilter[] = [];
   private orderBy: { column: string; ascending: boolean }[] = [];
   private max: number | null = null;
-  private op: 'select' | 'insert' | 'update' | 'upsert' = 'select';
+  private op: 'select' | 'insert' | 'update' | 'upsert' | 'delete' = 'select';
   private payload: Row[] = [];
   private shape: 'list' | 'one' | 'maybe' = 'list';
   private pending: Promise<Result> | null = null;
@@ -112,6 +121,11 @@ class Builder implements PromiseLike<Result> {
   lte(column: string, value: any): this { return this.range('lte', column, value); }
   gt(column: string, value: any): this { return this.range('gt', column, value); }
   lt(column: string, value: any): this { return this.range('lt', column, value); }
+
+  /** Bulk membership, as the milk-control lookup uses to resolve many aretes at once. */
+  in(column: string, values: any[]): this {
+    return this.range('in', column, values);
+  }
 
   /** Only the `.not(col, 'is', null)` form the alert queries use is supported. */
   not(column: string, operator: string, value: any): this {
@@ -154,6 +168,11 @@ class Builder implements PromiseLike<Result> {
     return this;
   }
 
+  delete(): this {
+    this.op = 'delete';
+    return this;
+  }
+
   maybeSingle(): Promise<Result> {
     this.shape = 'maybe';
     return this.run();
@@ -187,6 +206,7 @@ class Builder implements PromiseLike<Result> {
     this.ranges.every(({ op, column, value }) => {
       const cell = this.valueAt(row, column);
       if (op === 'notNull') return cell !== null && cell !== undefined;
+      if (op === 'in') return (value as any[]).includes(cell);
       if (cell === null || cell === undefined) return false;
       if (op === 'gte') return cell >= value;
       if (op === 'lte') return cell <= value;
@@ -215,6 +235,13 @@ class Builder implements PromiseLike<Result> {
       const hit = table.filter(this.matches);
       for (const row of hit) Object.assign(row, clone(patch));
       this.db.updates.push({ table: this.name, patch: clone(patch), filters: [...this.filters] });
+      return this.wrap(hit);
+    }
+
+    if (this.op === 'delete') {
+      const hit = table.filter(this.matches);
+      for (const row of hit) table.splice(table.indexOf(row), 1);
+      this.db.deletes.push({ table: this.name, filters: [...this.filters], rows: clone(hit) });
       return this.wrap(hit);
     }
 

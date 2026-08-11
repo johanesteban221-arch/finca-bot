@@ -6,11 +6,26 @@
 
 import { supabase } from '../supabase';
 import { FINCA_ID } from '../tenant';
+import { shiftDate } from '../dates';
 import { findAnimal, findOrCreateAnimal } from '../animals';
+import { aplicarProducto } from './sanidad';
 import * as S from './schemas';
+
+/** Average bovine gestation. Same constant analytics.ts and vw_alertas use. */
+export const GESTACION_DIAS = 283;
 
 export type ServicioResult = { animalId: string; eventoId: string; animalCreado: boolean };
 export type DxPrenezResult = { animalId: string; eventoId: string; animalCreado: boolean; estado: 'prenada' | 'vacia' };
+export type SecadoResult = {
+  animalId: string;
+  eventoId: string;
+  animalCreado: boolean;
+  /** The eventos_sanitarios row created for the intramammary, when one was used. */
+  eventoSanitarioId: string | null;
+  retiroLecheHasta: string | null;
+  /** Given by the caller, or derived from the last service + gestation. */
+  fechaProbableParto: string | null;
+};
 export type PartoResult = {
   madreId: string;
   criaId: string;
@@ -134,4 +149,81 @@ export async function registrarParto(input: S.PartoInput): Promise<PartoResult> 
 
   await actualizarEstado(madre.id, 'parida');
   return { madreId: madre.id, criaId: cria.id, eventoId, criaCreada, pesoRegistrado };
+}
+
+/** Most recent service date for an animal, or null if it was never served. */
+async function ultimoServicio(animalId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('eventos_reproductivos')
+    .select('fecha')
+    .eq('animal_id', animalId)
+    .eq('tipo', 'servicio')
+    .order('fecha', { ascending: false })
+    .limit(1);
+  if (error) throw new Error(`consultar último servicio: ${error.message}`);
+  return data?.[0]?.fecha ?? null;
+}
+
+/**
+ * Dries a cow off ~60 days before calving.
+ *
+ * Split across two tables on purpose:
+ *   · eventos_reproductivos — the state change and the expected calving date
+ *   · eventos_sanitarios    — the intramammary, via aplicarProducto, which is
+ *                             where retiro_leche_hasta gets computed. Dry-cow
+ *                             products carry the longest withdrawal periods on
+ *                             the farm, so this one must not be shortcut.
+ *
+ * ⚠️ A dried-off cow is still pregnant, but `estado_reproductivo` is one column
+ * and this moves her from 'prenada' to 'seca'. Anything that looks for upcoming
+ * calvings has to accept both values — vw_alertas and analytics.ts do. Adding a
+ * third reader means updating it too.
+ */
+export async function registrarSecado(input: S.SecadoInput): Promise<SecadoResult> {
+  const d = S.secado.parse(input);
+  const animal = await findOrCreateAnimal(d.arete, 'un secado');
+
+  // Derived from the event date, not from today, so a backdated dry-off still
+  // points at the right calving.
+  let fechaProbableParto = d.fechaProbableParto;
+  if (!fechaProbableParto) {
+    const servicio = await ultimoServicio(animal.id);
+    fechaProbableParto = servicio ? shiftDate(servicio, GESTACION_DIAS) : null;
+  }
+
+  let eventoSanitarioId: string | null = null;
+  let retiroLecheHasta: string | null = null;
+  if (d.producto) {
+    const aplicacion = await aplicarProducto({
+      animalId: animal.id,
+      producto: d.producto,
+      dosis: d.dosis,
+      via: 'intramamaria',
+      diagnostico: 'Secado',
+      responsable: d.responsable,
+      fecha: d.fecha,
+    });
+    eventoSanitarioId = aplicacion.eventoId;
+    retiroLecheHasta = aplicacion.retiroLecheHasta;
+  }
+
+  const eventoId = await insertarEvento({
+    finca_id: FINCA_ID,
+    animal_id: animal.id,
+    tipo: 'secado',
+    fecha: d.fecha,
+    fecha_probable_parto: fechaProbableParto,
+    evento_sanitario_id: eventoSanitarioId,
+    notas: d.responsable ? `Secado por: ${d.responsable}` : null,
+  }, 'secado');
+
+  await actualizarEstado(animal.id, 'seca');
+  return {
+    animalId: animal.id,
+    eventoId,
+    animalCreado: animal.creado,
+    eventoSanitarioId,
+    retiroLecheHasta,
+    fechaProbableParto,
+  };
 }

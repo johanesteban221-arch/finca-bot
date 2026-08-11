@@ -14,6 +14,13 @@ export const shift = addDays;
 
 export const PRENEZ_DIAS = 40; // days after service to suggest a pregnancy check
 
+// How far back to look for check-ups when working out which animals are still
+// waiting for a re-check. A pending RECHE older than this is not dropped from
+// the herd's reality, only from this alert — at six months the answer is a fresh
+// check-up, not a reminder. The bound also keeps the query from growing without
+// limit (see pending item #7 in CLAUDE.md).
+export const RECHEQUEO_VENTANA_DIAS = 180;
+
 export type Proxima = {
   arete: string; tipo: string; producto: string; proxima_fecha: string;
   vencida: boolean;
@@ -24,6 +31,15 @@ export type Retiro = {
   arete: string; producto: string; hasta: string;
   /** Days until the withdrawal period ends. 0 means it clears today. */
   dias: number;
+};
+export type Rechequeo = {
+  arete: string;
+  /** Date of the check-up that left the re-check pending. */
+  fecha: string;
+  /** Days elapsed since then. Always >= 0 — a check-up cannot be in the future. */
+  dias: number;
+  veterinario: string;
+  observaciones: string | null;
 };
 
 // Upcoming / overdue sanitary events (vaccines, treatments, dewormings) within a window.
@@ -62,6 +78,53 @@ export async function getRetiros(): Promise<Retiro[]> {
     hasta: r.retiro_leche_hasta,
     dias: daysBetween(hoy, r.retiro_leche_hasta),
   }));
+}
+
+/**
+ * Animals whose most recent reproductive check-up came back RECHE — the vet
+ * could not call it and asked to scan again.
+ *
+ * "Most recent" is the whole rule, and it is why there is no `resuelto` column
+ * to maintain: recording the next check-up closes the re-check automatically,
+ * whatever its outcome. A second RECHE keeps it open, which is correct. A flag
+ * would need someone to remember to clear it, and the one thing this alert
+ * exists to prevent is someone forgetting.
+ *
+ * The latest-per-animal reduction runs in JS rather than SQL because that is
+ * the shape PostgREST gives us (no DISTINCT ON), and it keeps the rule in the
+ * same place as the rest of the alert logic, under test. The window plus the
+ * row cap bound what it has to chew through.
+ */
+export async function getRechequeosPendientes(): Promise<Rechequeo[]> {
+  const hoy = today();
+  const res = await supabase
+    .from('chequeos_reproductivos')
+    .select('fecha, estado_codigo, veterinario, observaciones, created_at, animales!inner(arete, estado)')
+    .eq('animales.estado', 'activo')
+    .gte('fecha', shift(-RECHEQUEO_VENTANA_DIAS))
+    // created_at breaks ties when a cow was checked twice on the same day.
+    .order('fecha', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(1000);
+
+  const ultimoPorAnimal = new Map<string, any>();
+  for (const c of unwrapList<any>(res, 'chequeos_reproductivos (rechequeos)')) {
+    const arete = c.animales?.arete;
+    // Rows arrive newest-first, so the first one seen per animal is the latest.
+    if (arete && !ultimoPorAnimal.has(arete)) ultimoPorAnimal.set(arete, c);
+  }
+
+  return Array.from(ultimoPorAnimal.entries())
+    .filter(([, c]) => c.estado_codigo === 'RECHE')
+    .map(([arete, c]) => ({
+      arete,
+      fecha: c.fecha,
+      dias: daysBetween(c.fecha, hoy),
+      veterinario: c.veterinario || '',
+      observaciones: c.observaciones ?? null,
+    }))
+    // Oldest first: the one that has been waiting longest is the one being forgotten.
+    .sort((a, b) => a.fecha.localeCompare(b.fecha));
 }
 
 // Cows served > PRENEZ_DIAS days ago that are still 'servida' (need a pregnancy check).

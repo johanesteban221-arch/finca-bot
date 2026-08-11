@@ -178,9 +178,16 @@ export async function getAnalytics(): Promise<Analytics> {
   }
 
   // Próximos partos: hembras preñadas -> último servicio + 283 días.
+  //
+  // 'seca' cuenta igual que 'prenada'. Una vaca secada sigue preñada, pero
+  // estado_reproductivo es una sola columna y registrarSecado() la mueve a
+  // 'seca' ~60 días antes del parto. Filtrar solo por 'prenada' la sacaría de
+  // esta lista justo en la recta final, que es cuando más importa. vw_alertas
+  // lleva la misma regla — si cambia una, cambia la otra.
+  const PRENADAS = ['prenada', 'seca'];
   const hoy = today();
   const proximosPartos: ProxParto[] = [];
-  for (const h of hembrasAct.filter((a) => a.estado_reproductivo === 'prenada')) {
+  for (const h of hembrasAct.filter((a) => PRENADAS.includes(a.estado_reproductivo))) {
     const evs = (reproByAnimal.get(h.id) || []).filter((e) => e.tipo === 'servicio').sort((x, y) => x.fecha.localeCompare(y.fecha));
     const ult = evs[evs.length - 1];
     if (!ult) continue;
@@ -202,6 +209,12 @@ export async function getAnalytics(): Promise<Analytics> {
   };
 
   // ---------- Leche (últimos 30 días) ----------
+  // ⚠️ Estas cifras cambian de significado ahora que produccion_leche tiene
+  // escritor (controles de leche cada 2-3 semanas, no registro diario):
+  //   · promLitrosDia y promPorVacaDia siguen siendo correctos — dividen entre
+  //     los días CON registro, y un control mide el hato completo en un día.
+  //   · totalLitros30d ya no es la producción del mes, sino la suma de los días
+  //     de control. La etiqueta del dashboard hay que ajustarla en el Bloque B.
   const totalLitros30d = leche.reduce((s, r) => s + Number(r.litros || 0), 0);
   const diasConRegistro = new Set(leche.map((r) => r.fecha)).size;
   const vacasEnOrdeno = new Set(leche.map((r) => r.animal_id)).size;

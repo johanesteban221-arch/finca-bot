@@ -11,7 +11,10 @@ vi.mock('../../src/lib/supabase', async () => {
   return { ...actual, supabase: { from: (name: string) => dbRef.current.from(name) } };
 });
 
-import { getProximas, getRetiros, getPrenezPendientes, PRENEZ_DIAS } from '../../src/lib/alerts';
+import {
+  getProximas, getRetiros, getPrenezPendientes, getRechequeosPendientes,
+  PRENEZ_DIAS, RECHEQUEO_VENTANA_DIAS,
+} from '../../src/lib/alerts';
 import { resetDb } from '../helpers/db';
 import type { FakeSupabase } from '../helpers/fake-supabase';
 import { NOW } from '../helpers/harness';
@@ -37,10 +40,34 @@ const REPRO = [
   { tipo: 'servicio', fecha: '2026-05-01', animales: { arete: '102', estado_reproductivo: 'prenada' } }, // ya diagnosticada
 ];
 
+// Chequeos reproductivos. `animales` embebido como objeto anidado, igual que las
+// otras dos tablas. La regla que se prueba es "gana el chequeo más reciente de
+// cada animal": no hay bandera de resuelto que mantener.
+const CHEQUEOS = [
+  // 045: RECHE y nada después -> pendiente.
+  { fecha: '2026-07-20', estado_codigo: 'RECHE', veterinario: 'Juan Pérez', observaciones: 'Cuerno derecho dudoso', animales: { arete: '045', estado: 'activo' } },
+  // 077: RECHE viejo, resuelto por un chequeo posterior -> ya no aparece.
+  { fecha: '2026-06-01', estado_codigo: 'RECHE', veterinario: 'Juan Pérez', observaciones: null, animales: { arete: '077', estado: 'activo' } },
+  { fecha: '2026-07-05', estado_codigo: 'P', veterinario: 'Juan Pérez', observaciones: null, animales: { arete: '077', estado: 'activo' } },
+  // 101: dos RECHE seguidos -> sigue pendiente, con la fecha del último.
+  { fecha: '2026-06-15', estado_codigo: 'RECHE', veterinario: 'Juan Pérez', observaciones: null, animales: { arete: '101', estado: 'activo' } },
+  { fecha: '2026-07-30', estado_codigo: 'RECHE', veterinario: 'Ana Ruiz', observaciones: 'Repetir en 15 días', animales: { arete: '101', estado: 'activo' } },
+  // 102: nunca estuvo en RECHE.
+  { fecha: '2026-07-25', estado_codigo: 'VAP', veterinario: 'Juan Pérez', observaciones: null, animales: { arete: '102', estado: 'activo' } },
+  // 103: RECHE pero el animal ya no está activo (vendido).
+  { fecha: '2026-07-28', estado_codigo: 'RECHE', veterinario: 'Juan Pérez', observaciones: null, animales: { arete: '103', estado: 'vendido' } },
+  // 104: RECHE fuera de la ventana de 180 días.
+  { fecha: '2026-01-10', estado_codigo: 'RECHE', veterinario: 'Juan Pérez', observaciones: null, animales: { arete: '104', estado: 'activo' } },
+];
+
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
-  db = resetDb({ eventos_sanitarios: SANITARIOS, eventos_reproductivos: REPRO });
+  db = resetDb({
+    eventos_sanitarios: SANITARIOS,
+    eventos_reproductivos: REPRO,
+    chequeos_reproductivos: CHEQUEOS,
+  });
 });
 
 afterEach(() => {
@@ -111,5 +138,54 @@ describe('getPrenezPendientes', () => {
     db.failOn('eventos_reproductivos', 'timeout');
 
     await expect(getPrenezPendientes()).rejects.toThrow(/eventos_reproductivos/);
+  });
+});
+
+describe('getRechequeosPendientes', () => {
+  it('lista los animales cuyo último chequeo quedó en RECHE, del más viejo al más nuevo', async () => {
+    const pendientes = await getRechequeosPendientes();
+
+    // El que lleva más tiempo esperando va primero: es el que se está olvidando.
+    expect(pendientes).toEqual([
+      expect.objectContaining({ arete: '045', fecha: '2026-07-20', dias: 15, veterinario: 'Juan Pérez', observaciones: 'Cuerno derecho dudoso' }),
+      expect.objectContaining({ arete: '101', fecha: '2026-07-30', dias: 5, veterinario: 'Ana Ruiz', observaciones: 'Repetir en 15 días' }),
+    ]);
+  });
+
+  it('un chequeo posterior cierra el rechequeo sin que nadie marque nada', async () => {
+    const pendientes = await getRechequeosPendientes();
+
+    // 077 tuvo RECHE el 2026-06-01 y fue chequeada P el 2026-07-05.
+    expect(pendientes.map((r) => r.arete)).not.toContain('077');
+  });
+
+  it('dos RECHE seguidos siguen pendientes, con la fecha del más reciente', async () => {
+    const pendientes = await getRechequeosPendientes();
+
+    expect(pendientes.find((r) => r.arete === '101')?.fecha).toBe('2026-07-30');
+  });
+
+  it('ignora animales que ya no están activos', async () => {
+    const pendientes = await getRechequeosPendientes();
+
+    expect(pendientes.map((r) => r.arete)).not.toContain('103');
+  });
+
+  it(`ignora chequeos anteriores a ${RECHEQUEO_VENTANA_DIAS} días`, async () => {
+    const pendientes = await getRechequeosPendientes();
+
+    expect(pendientes.map((r) => r.arete)).not.toContain('104');
+  });
+
+  it('no confunde otros códigos con un rechequeo', async () => {
+    const pendientes = await getRechequeosPendientes();
+
+    expect(pendientes.map((r) => r.arete)).not.toContain('102');
+  });
+
+  it('lanza si la consulta falla, en vez de decir que no hay nada pendiente', async () => {
+    db.failOn('chequeos_reproductivos', 'timeout');
+
+    await expect(getRechequeosPendientes()).rejects.toThrow(/chequeos_reproductivos.*timeout/);
   });
 });

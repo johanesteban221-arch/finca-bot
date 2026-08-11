@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { sendText, sendTemplate } from '@/lib/whatsapp';
-import { getProximas, getRetiros, getPrenezPendientes, today, shift, PRENEZ_DIAS } from '@/lib/alerts';
+import {
+  getProximas, getRetiros, getPrenezPendientes, getRechequeosPendientes,
+  today, shift, PRENEZ_DIAS,
+} from '@/lib/alerts';
 
 // Approved WhatsApp template for the daily summary (delivers outside the 24h window).
 const ALERT_TEMPLATE = process.env.WHATSAPP_ALERT_TEMPLATE || 'alerta_diaria_finca';
@@ -34,10 +37,12 @@ export async function GET(req: NextRequest) {
   // whole run: an alert that says "nada pendiente" because the database was
   // unreachable is worse than no alert at all — the owner would ship milk from
   // a cow still inside its withdrawal period.
-  let prox, retiros, prenez;
+  let prox, retiros, prenez, rechequeos;
   let vac, trat, desp, pes, serv, parto, muertes;
   try {
-    [prox, retiros, prenez] = await Promise.all([getProximas(), getRetiros(), getPrenezPendientes()]);
+    [prox, retiros, prenez, rechequeos] = await Promise.all([
+      getProximas(), getRetiros(), getPrenezPendientes(), getRechequeosPendientes(),
+    ]);
     [vac, trat, desp, pes, serv, parto, muertes] = await Promise.all([
       countYesterday('eventos_sanitarios', { tipo: 'vacuna' }),
       countYesterday('eventos_sanitarios', { tipo: 'tratamiento' }),
@@ -66,8 +71,14 @@ export async function GET(req: NextRequest) {
     ? prenez.map((a) => `🔍 ${a} · servida hace +${PRENEZ_DIAS}d → revisar preñez`).join('\n')
     : '_Ninguna pendiente._';
 
+  // RECHE = el veterinario no pudo definir y pidió volver a ecografiar. Se cierra
+  // solo con el chequeo siguiente, así que mientras aparezca aquí sigue pendiente.
+  const rechequeoLineas = rechequeos.length
+    ? rechequeos.map((r) => `🔁 ${r.arete} · rechequeo pendiente desde ${r.fecha} (${r.dias}d)`).join('\n')
+    : '_Ninguno pendiente._';
+
   const resumen = `💉 ${vac} · 🔴 ${trat} · 🪱 ${desp} · ⚖️ ${pes} · 🐂 ${serv} · 🍼 ${parto} · 💀 ${muertes}`;
-  const totalAlertas = prox.length + retiros.length + prenez.length;
+  const totalAlertas = prox.length + retiros.length + prenez.length + rechequeos.length;
 
   const mensaje =
     `🌅 *Alertas del día* (${hoy})\n` +
@@ -75,6 +86,7 @@ export async function GET(req: NextRequest) {
     `📅 *Próximas / vencidas (7 días):*\n${proxLineas}\n\n` +
     `🥛 *Retiro de leche vigente:*\n${retLineas}\n\n` +
     `🔍 *Revisar preñez:*\n${prenezLineas}\n\n` +
+    `🔁 *Rechequeo pendiente:*\n${rechequeoLineas}\n\n` +
     `📊 *Ayer:* ${resumen}\n` +
     `━━━━━━━━━━━━━━━\n` +
     `Escribe *menú* para registrar o consultar. 🐄`;
@@ -96,6 +108,11 @@ export async function GET(req: NextRequest) {
   // Prefer the approved template (works at 6 AM, outside the 24h window).
   // Fall back to free-form text (only delivers if within the 24h window) when the
   // template isn't approved yet, so we still get the full detail during testing.
+  // ⚠️ Cuatro variables, las que declara la plantilla. NO agregar una quinta para
+  // los rechequeos sin volver a someter la plantilla a Meta: un número de
+  // parámetros distinto al aprobado hace que el envío falle entero. Cuando se
+  // haga la aprobación (pendiente #5 en CLAUDE.md), incluir rechequeos.length.
+  // Mientras tanto el detalle completo va en el mensaje de texto de respaldo.
   const params = [hoy, String(prox.length), String(retiros.length), String(prenez.length)];
   let viaTemplate = 0;
   let viaTexto = 0;
@@ -109,6 +126,7 @@ export async function GET(req: NextRequest) {
     ok: true,
     fecha: hoy,
     total_alertas: totalAlertas,
+    rechequeos: rechequeos.length,
     destinatarios: destinatarios.length,
     enviados: viaTemplate + viaTexto,
     via_template: viaTemplate,

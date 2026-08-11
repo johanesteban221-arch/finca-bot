@@ -18,6 +18,24 @@
 -- `fecha` debería coincidir con la fecha local de `created_at`. Cuando no
 -- coincide, la fila es candidata.
 --
+-- ⚠️ ESA PREMISA YA NO ES UNIVERSAL. Desde db/03_hoja_de_vida.sql, las funciones
+--    de dominio aceptan una `fecha` explícita y los formularios del dashboard
+--    (Bloque D) van a retrofechar de forma legítima: el veterinario captura el
+--    lunes los chequeos del sábado. Para esas filas, `fecha <> fecha local de
+--    created_at` es NORMAL, no un síntoma.
+--
+--    Este diagnóstico sigue siendo válido tal como está porque acota el barrido
+--    a las cuatro tablas que ya existían cuando ocurrió el bug
+--    (eventos_sanitarios, eventos_reproductivos, pesajes, movimientos) y exige
+--    además la firma horaria (created_at entre 00:00 y 04:59 UTC). Las tablas
+--    nuevas —chequeos_reproductivos, protocolo_aplicaciones, controles_leche—
+--    NO se agregan aquí a propósito: nacieron después del fix de dates.ts, no
+--    pueden tener filas afectadas, y sus fechas retrofechadas darían falsos
+--    positivos.
+--
+--    Si alguna vez se retrofecha en las cuatro tablas de abajo, la consulta 7
+--    (control) empezará a reportar filas legítimas. Revisar antes de corregir.
+--
 -- La FIRMA del bug es exacta y verificable:
 --   desfase = +1 día  Y  created_at cae entre las 00:00 y 04:59 UTC
 --                        (= 19:00 a 23:59 en la finca)

@@ -1,5 +1,7 @@
 import { getAnalytics } from '@/lib/analytics';
-import { getProximas, getRetiros, getPrenezPendientes, PRENEZ_DIAS } from '@/lib/alerts';
+import {
+  getProximas, getRetiros, getPrenezPendientes, getRechequeosPendientes, PRENEZ_DIAS,
+} from '@/lib/alerts';
 import {
   Section, Card, Kpi, KpiRow, Badge, Table, TH, TD, Arete, EmptyRow, Bars, Banner,
 } from '@/components/ui';
@@ -27,20 +29,22 @@ const haceDias = (d: number) => (d === -1 ? 'ayer' : `hace ${Math.abs(d)} días`
 export default async function Dashboard() {
   // allSettled, no all: una consulta caída degrada su propia sección en vez de
   // dejar el tablero en blanco.
-  const [aRes, proxRes, retRes, prenezRes] = await Promise.allSettled([
-    getAnalytics(), getProximas(), getRetiros(), getPrenezPendientes(),
+  const [aRes, proxRes, retRes, prenezRes, recheRes] = await Promise.allSettled([
+    getAnalytics(), getProximas(), getRetiros(), getPrenezPendientes(), getRechequeosPendientes(),
   ]);
 
   const a = aRes.status === 'fulfilled' ? aRes.value : null;
   const proximas = proxRes.status === 'fulfilled' ? proxRes.value : null;
   const retiros = retRes.status === 'fulfilled' ? retRes.value : null;
   const prenez = prenezRes.status === 'fulfilled' ? prenezRes.value : null;
+  const rechequeos = recheRes.status === 'fulfilled' ? recheRes.value : null;
 
   const fallos = ([
     ['Indicadores del hato', aRes],
     ['Próximas / vencidas', proxRes],
     ['Retiros de leche', retRes],
     ['Revisar preñez', prenezRes],
+    ['Rechequeos pendientes', recheRes],
   ] as const)
     .filter(([, r]) => r.status === 'rejected')
     .map(([label, r]) => `${label} — ${errorOf(r as PromiseRejectedResult)}`);
@@ -288,6 +292,7 @@ export default async function Dashboard() {
             <Kpi label="Próximas / vencidas" value={dash(proximas?.length)} tono="aviso" />
             <Kpi label="Retiros de leche" value={dash(retiros?.length)} tono="info" />
             <Kpi label="Revisar preñez" value={dash(prenez?.length)} />
+            <Kpi label="Rechequeo pendiente" value={dash(rechequeos?.length)} tono="aviso" />
           </KpiRow>
 
           <div className="grid gap-4 xl:grid-cols-2">
@@ -336,6 +341,32 @@ export default async function Dashboard() {
                       <TD>{r.producto || '—'}</TD>
                       <TD className="whitespace-nowrap tabular-nums">{r.hasta}</TD>
                       <TD><Badge tono="info">{enDias(r.dias)}</Badge></TD>
+                    </tr>
+                  ))}
+                </tbody>
+              </Table>
+            </Card>
+
+            <Card title="🔁 Rechequeo pendiente">
+              <p className="mb-3 text-xs text-tierra-500">
+                El veterinario marcó RECHE y falta volver a ecografiar. Se cierra solo
+                al registrar el siguiente chequeo.
+              </p>
+              <Table>
+                <thead>
+                  <tr><TH>Arete</TH><TH>Desde</TH><TH>Espera</TH><TH>Observación</TH></tr>
+                </thead>
+                <tbody>
+                  {rechequeos === null && <EmptyRow cols={4}>No se pudo cargar.</EmptyRow>}
+                  {rechequeos?.length === 0 && (
+                    <EmptyRow cols={4}>Ninguno pendiente.</EmptyRow>
+                  )}
+                  {rechequeos?.map((r, i) => (
+                    <tr key={`${r.arete}-${r.fecha}-${i}`}>
+                      <TD><Arete>{r.arete}</Arete></TD>
+                      <TD className="whitespace-nowrap tabular-nums">{r.fecha}</TD>
+                      <TD><Badge tono="aviso">{r.dias === 0 ? 'hoy' : haceDias(-r.dias)}</Badge></TD>
+                      <TD>{r.observaciones || '—'}</TD>
                     </tr>
                   ))}
                 </tbody>

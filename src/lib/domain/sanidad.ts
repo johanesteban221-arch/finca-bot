@@ -72,6 +72,50 @@ async function insertarEvento(row: Record<string, unknown>, etiqueta: string): P
   return data.id;
 }
 
+/**
+ * Records a product applied as part of a bigger event — the intramammary of a
+ * dry-off, the hormone given during a reproductive check-up, each step of a
+ * synchronization protocol.
+ *
+ * Those three could each have stored `producto` + `dosis` in their own table.
+ * They must not: `retiro_leche_hasta` is derived from `cat_medicamentos` and
+ * exists in exactly one place. A hormone or a dry-cow antibiotic recorded
+ * outside `eventos_sanitarios` is a withdrawal period the milk alerts cannot
+ * see, and the failure mode is contaminated milk reaching the tank.
+ *
+ * Takes an already-resolved `animalId` (not an arete) because every caller has
+ * looked the animal up already, and a second findOrCreate would report a
+ * misleading `animalCreado`.
+ */
+export async function aplicarProducto(input: {
+  animalId: string;
+  producto: string;
+  dosis?: string | null;
+  /** eventos_sanitarios.tipo — 'tratamiento' unless the caller knows better. */
+  tipo?: 'vacuna' | 'desparasitacion' | 'tratamiento' | 'revision';
+  via?: string | null;
+  diagnostico?: string | null;
+  responsable?: string | null;
+  fecha: string;
+}): Promise<{ eventoId: string; retiroLecheHasta: string | null }> {
+  const retiro = await retiroLecheHasta(input.producto, input.fecha);
+
+  const eventoId = await insertarEvento({
+    finca_id: FINCA_ID,
+    animal_id: input.animalId,
+    tipo: input.tipo ?? 'tratamiento',
+    fecha: input.fecha,
+    producto: input.producto,
+    dosis: input.dosis ?? null,
+    via: input.via ?? null,
+    diagnostico: input.diagnostico ?? null,
+    responsable: input.responsable ?? null,
+    retiro_leche_hasta: retiro,
+  }, `aplicación de ${input.producto}`);
+
+  return { eventoId, retiroLecheHasta: retiro };
+}
+
 export async function registrarVacunacion(input: S.VacunacionInput): Promise<SanidadResult> {
   const d = S.vacunacion.parse(input);
   const animal = await findOrCreateAnimal(d.arete, 'una vacunación');

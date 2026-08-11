@@ -26,6 +26,17 @@ export const fecha = z
   .refine((f) => f <= today(), 'La fecha no puede estar en el futuro.')
   .default(() => today());
 
+// A calendar day with no direction constraint. Exists for `fecha_probable_parto`,
+// which is by definition in the future — running it through `fecha` above would
+// reject every dry-off. Do not reach for this to dodge the no-future rule on an
+// event date: an event that has not happened yet must not be recorded.
+export const fechaEstimada = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha inválida: usa el formato AAAA-MM-DD.')
+  .nullable()
+  .optional()
+  .transform((v) => v ?? null);
+
 // Free-text optional field: the flows accept the literal NINGUNO to mean
 // "not recorded", and empty strings must land as NULL, not ''.
 export const opcional = z
@@ -56,7 +67,8 @@ export const crearAnimal = z.object({
 });
 
 export const categorizarAnimal = z.object({
-  animalId: z.string().uuid('Id de animal inválido.'),
+  // z.uuid() rather than z.string().uuid(), which zod 4 deprecates.
+  animalId: z.uuid('Id de animal inválido.'),
   categoria,
 });
 
@@ -146,6 +158,162 @@ export const mortalidad = z.object({
 });
 
 // ---------------------------------------------------------------------
+// Secado  (eventos_reproductivos.tipo CHECK already allows 'secado')
+// ---------------------------------------------------------------------
+// The intramammary product is optional here on purpose: a cow can be dried off
+// by simply stopping the milking routine. When it IS given, the domain routes it
+// through eventos_sanitarios so the withdrawal date gets computed.
+export const secado = z
+  .object({
+    arete,
+    producto: opcional,
+    dosis: opcional,
+    responsable: opcional,
+    /** Left null to let the domain derive it from the last service + gestation. */
+    fechaProbableParto: fechaEstimada,
+    fecha,
+  })
+  .refine((s) => !s.producto || !!s.dosis, {
+    message: 'Si registras un producto de secado, indica la dosis.',
+    path: ['dosis'],
+  });
+
+// ---------------------------------------------------------------------
+// Chequeo reproductivo  (db/03_hoja_de_vida.sql)
+// ---------------------------------------------------------------------
+// Clinical vocabulary. Mirrors the CHECK constraints exactly — widening one
+// without the other produces a Postgres error the vet cannot act on.
+export const CODIGOS_CHEQUEO = ['P', 'V', 'SE', 'VAS', 'VAP', 'PP', 'RECHE'] as const;
+export const ESTRUCTURAS_OVARICAS = [
+  'CL1', 'CL2', 'CL3', 'MF', 'QF', 'QL', 'F8mm', 'F10mm', 'F12mm', 'FPre',
+] as const;
+
+export type CodigoChequeo = (typeof CODIGOS_CHEQUEO)[number];
+export type EstructuraOvarica = (typeof ESTRUCTURAS_OVARICAS)[number];
+
+const estructuraOvarica = z
+  .enum(ESTRUCTURAS_OVARICAS)
+  .nullable()
+  .optional()
+  .transform((v) => v ?? null);
+
+// numeric(4,1) in the schema. The cap catches a slipped decimal point (a 12 mm
+// follicle typed as 120); the largest structure a vet realistically measures is
+// a follicular cyst around 40 mm.
+const milimetros = z
+  .number()
+  .positive('La medida debe ser mayor que 0.')
+  .max(100, 'Medida implausible en mm (máx. 100).')
+  .nullable()
+  .optional()
+  .transform((v) => v ?? null);
+
+export const chequeoReproductivo = z
+  .object({
+    arete,
+    veterinario: z.string().trim().min(1, 'Indica quién hizo el chequeo.'),
+    estadoCodigo: z.enum(CODIGOS_CHEQUEO),
+    ovarioDerMm: milimetros,
+    ovarioDerEstructura: estructuraOvarica,
+    ovarioIzqMm: milimetros,
+    ovarioIzqEstructura: estructuraOvarica,
+    observaciones: opcional,
+    // Treatment applied during the check-up. Stored as an eventos_sanitarios row,
+    // never as columns here — see domain/chequeos.ts.
+    producto: opcional,
+    dosis: opcional,
+    via: opcional,
+    fecha,
+  })
+  .refine((c) => !c.producto || !!c.dosis, {
+    message: 'Si registras un producto, indica la dosis.',
+    path: ['dosis'],
+  });
+
+// ---------------------------------------------------------------------
+// Protocolos de sincronización  (db/03_hoja_de_vida.sql)
+// ---------------------------------------------------------------------
+const protocoloId = z.uuid('Id de protocolo inválido.');
+
+export const iniciarProtocolo = z.object({
+  arete,
+  nombreProtocolo: z.string().trim().min(1, 'Indica el nombre del protocolo.'),
+  veterinario: opcional,
+  notas: opcional,
+  fecha, // fecha_inicio
+});
+
+export const aplicacionProtocolo = z.object({
+  protocoloId,
+  // Day 0 is the start of the protocol. The cap is a typo guard: no synchronization
+  // protocol in use runs longer than a couple of months.
+  diaNumero: z.number().int('El día debe ser un número entero.').min(0, 'El día no puede ser negativo.').max(60, 'Día fuera de rango (máx. 60).'),
+  producto: z.string().trim().min(1, 'Indica el producto aplicado.'),
+  dosis: opcional,
+  via: opcional,
+  aplicadoPor: opcional,
+  fecha,
+});
+
+export const iaProtocolo = z.object({
+  protocoloId,
+  inseminador: z.string().trim().min(1, 'Indica quién inseminó.'),
+  pajilla: opcional,
+  fecha,
+});
+
+export const cerrarProtocolo = z.object({
+  protocoloId,
+  resultado: z.enum(['preno', 'no_preno']),
+  fecha, // date of the pregnancy diagnosis
+});
+
+export const cancelarProtocolo = z.object({
+  protocoloId,
+  motivo: opcional,
+});
+
+// ---------------------------------------------------------------------
+// Control de leche manual  (db/03_hoja_de_vida.sql)
+// ---------------------------------------------------------------------
+// 0 is a legitimate reading (a cow that gave nothing that milking), so this is
+// min(0), not positive(). The upper bound is a typo guard — a dual-purpose cow
+// giving over 50 L in one ordeño does not exist.
+const litros = z
+  .number()
+  .min(0, 'Los litros no pueden ser negativos.')
+  .max(50, 'Litros implausibles en un ordeño (máx. 50).')
+  .nullable()
+  .optional()
+  .transform((v) => v ?? null);
+
+export const medicionLeche = z
+  .object({
+    arete,
+    litrosAm: litros,
+    litrosPm: litros,
+  })
+  .refine((m) => m.litrosAm !== null || m.litrosPm !== null, {
+    message: 'Cada vaca necesita al menos un ordeño registrado.',
+    path: ['litrosAm'],
+  });
+
+export const controlLeche = z
+  .object({
+    fecha,
+    medidoPor: opcional,
+    notas: opcional,
+    mediciones: z.array(medicionLeche).min(1, 'Registra al menos una vaca.'),
+  })
+  // The form lists the whole herd on one screen, so a repeated arete means the
+  // same cow was filled twice. Caught here rather than by the unique index,
+  // which would only fail halfway through the batch.
+  .refine(
+    (c) => new Set(c.mediciones.map((m) => m.arete)).size === c.mediciones.length,
+    { message: 'Hay aretes repetidos en el control.', path: ['mediciones'] },
+  );
+
+// ---------------------------------------------------------------------
 // Inferred input types — what callers pass in.
 // ---------------------------------------------------------------------
 export type CrearAnimalInput = z.input<typeof crearAnimal>;
@@ -158,3 +326,11 @@ export type DxPrenezInput = z.input<typeof dxPrenez>;
 export type PartoInput = z.input<typeof parto>;
 export type PesajeInput = z.input<typeof pesaje>;
 export type MortalidadInput = z.input<typeof mortalidad>;
+export type SecadoInput = z.input<typeof secado>;
+export type ChequeoReproductivoInput = z.input<typeof chequeoReproductivo>;
+export type IniciarProtocoloInput = z.input<typeof iniciarProtocolo>;
+export type AplicacionProtocoloInput = z.input<typeof aplicacionProtocolo>;
+export type IaProtocoloInput = z.input<typeof iaProtocolo>;
+export type CerrarProtocoloInput = z.input<typeof cerrarProtocolo>;
+export type CancelarProtocoloInput = z.input<typeof cancelarProtocolo>;
+export type ControlLecheInput = z.input<typeof controlLeche>;

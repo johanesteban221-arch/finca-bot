@@ -8,6 +8,8 @@
 --   animales · eventos_sanitarios · eventos_reproductivos · pesajes
 --   movimientos · produccion_leche · confirmaciones_pendientes
 --   whatsapp_sessions
+--   chequeos_reproductivos · protocolos_sincronizacion · protocolo_aplicaciones
+--   controles_leche                                    (db/03_hoja_de_vida.sql)
 --
 -- NO TOCA:
 --   fincas · whatsapp_users · whatsapp_user_fincas · cat_* (todos los catálogos)
@@ -50,6 +52,10 @@ union all select 'movimientos',             count(*) from movimientos
 union all select 'produccion_leche',        count(*) from produccion_leche
 union all select 'confirmaciones_pendientes', count(*) from confirmaciones_pendientes
 union all select 'whatsapp_sessions',       count(*) from whatsapp_sessions
+union all select 'chequeos_reproductivos',  count(*) from chequeos_reproductivos
+union all select 'protocolos_sincronizacion', count(*) from protocolos_sincronizacion
+union all select 'protocolo_aplicaciones',  count(*) from protocolo_aplicaciones
+union all select 'controles_leche',         count(*) from controles_leche
 order by tabla;
 
 -- Lo que debe sobrevivir. Anota estos números: al final tienen que ser iguales.
@@ -75,18 +81,28 @@ begin;
   -- ON DELETE SET NULL (toro_id, cria_id, madre_id, padre_id), pero el borrado
   -- se hace explícito y en orden para no depender de ese comportamiento.
 
-  -- 2.1 Hijas de `animales` (ninguna tiene dependientes a su vez)
+  -- 2.1 Nietas primero: cuelgan de otra hija, no solo de `animales`.
+  --     protocolo_aplicaciones → protocolos_sincronizacion
+  --     chequeos_reproductivos y protocolos apuntan además a eventos_sanitarios /
+  --     eventos_reproductivos (ON DELETE SET NULL), así que van antes que ellos
+  --     para que el borrado sea determinista y no dispare updates de RI.
+  delete from protocolo_aplicaciones;
+  delete from protocolos_sincronizacion;
+  delete from chequeos_reproductivos;
+
+  -- 2.2 Hijas de `animales`
   delete from eventos_sanitarios;
   delete from pesajes;
   delete from movimientos;
-  delete from produccion_leche;
+  delete from produccion_leche;        -- también hija de controles_leche (control_id)
+  delete from controles_leche;
   delete from eventos_reproductivos;   -- apunta a animales por animal_id, toro_id y cria_id
 
-  -- 2.2 Tablas sin FK hacia animales
+  -- 2.3 Tablas sin FK hacia animales
   delete from confirmaciones_pendientes;
   delete from whatsapp_sessions;
 
-  -- 2.3 Genealogía: animales se referencia a sí misma (madre_id / padre_id).
+  -- 2.4 Genealogía: animales se referencia a sí misma (madre_id / padre_id).
   --     Con ON DELETE SET NULL el borrado masivo funciona igual, pero limpiar
   --     los enlaces primero lo vuelve determinista y evita que el trigger de RI
   --     actualice filas que están a punto de desaparecer.
@@ -102,6 +118,10 @@ begin;
   union all select 'produccion_leche',        count(*) from produccion_leche
   union all select 'confirmaciones_pendientes', count(*) from confirmaciones_pendientes
   union all select 'whatsapp_sessions',       count(*) from whatsapp_sessions
+  union all select 'chequeos_reproductivos',  count(*) from chequeos_reproductivos
+  union all select 'protocolos_sincronizacion', count(*) from protocolos_sincronizacion
+  union all select 'protocolo_aplicaciones',  count(*) from protocolo_aplicaciones
+  union all select 'controles_leche',         count(*) from controles_leche
   order by tabla;
 
   -- Y esto NO debe haber cambiado.
@@ -130,10 +150,15 @@ rollback;   -- <<< nada de lo anterior queda aplicado
 /*
 begin;
 
+  delete from protocolo_aplicaciones;
+  delete from protocolos_sincronizacion;
+  delete from chequeos_reproductivos;
+
   delete from eventos_sanitarios;
   delete from pesajes;
   delete from movimientos;
   delete from produccion_leche;
+  delete from controles_leche;
   delete from eventos_reproductivos;
 
   delete from confirmaciones_pendientes;
@@ -157,6 +182,10 @@ union all select 'movimientos',             count(*) from movimientos
 union all select 'produccion_leche',        count(*) from produccion_leche
 union all select 'confirmaciones_pendientes', count(*) from confirmaciones_pendientes
 union all select 'whatsapp_sessions',       count(*) from whatsapp_sessions
+union all select 'chequeos_reproductivos',  count(*) from chequeos_reproductivos
+union all select 'protocolos_sincronizacion', count(*) from protocolos_sincronizacion
+union all select 'protocolo_aplicaciones',  count(*) from protocolo_aplicaciones
+union all select 'controles_leche',         count(*) from controles_leche
 order by tabla;
 
 
@@ -171,10 +200,14 @@ order by tabla;
 /*
 begin;
 
+  delete from protocolo_aplicaciones    where finca_id = '00000000-0000-0000-0000-000000000001';
+  delete from protocolos_sincronizacion where finca_id = '00000000-0000-0000-0000-000000000001';
+  delete from chequeos_reproductivos    where finca_id = '00000000-0000-0000-0000-000000000001';
   delete from eventos_sanitarios        where finca_id = '00000000-0000-0000-0000-000000000001';
   delete from pesajes                   where finca_id = '00000000-0000-0000-0000-000000000001';
   delete from movimientos               where finca_id = '00000000-0000-0000-0000-000000000001';
   delete from produccion_leche          where finca_id = '00000000-0000-0000-0000-000000000001';
+  delete from controles_leche           where finca_id = '00000000-0000-0000-0000-000000000001';
   delete from eventos_reproductivos     where finca_id = '00000000-0000-0000-0000-000000000001';
   delete from confirmaciones_pendientes where finca_id = '00000000-0000-0000-0000-000000000001';
 

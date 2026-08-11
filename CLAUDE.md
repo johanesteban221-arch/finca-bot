@@ -71,13 +71,24 @@ state machines — no LLM is used to parse incoming messages. ✅ This is how `f
 > **Status:** no Anthropic SDK in `package.json`, no Claude call anywhere in `finca-bot/`.
 > The only LLM in the system today is OpenAI (intent parsing + Whisper) inside n8n `WF-01`.
 
-### Milk production: hardware only — 🎯 TARGET, NOT BUILT
-> **Status:** the endpoint does not exist yet. Today the app exposes only 3 API routes
-> (whatsapp/webhook, cron/daily-alerts, cron/backup). There is no `X-Device-Key` auth
-> and no manual milk-entry path either — `produccion_leche` has no writer at all.
+### Milk production: hardware + periodic manual control
+> **Status:** the ESP32 endpoint is still 🎯 — it does not exist, and there is no
+> `X-Device-Key` auth. Today the app exposes 3 API routes (whatsapp/webhook,
+> cron/daily-alerts, cron/backup).
+>
+> ✅ `produccion_leche` **does now have a writer**: `domain/leche.registrarControlLeche()`,
+> the periodic milk control (whole milking herd weighed on one day, every 2-3 weeks).
+> Its dashboard form is Bloque D.
 
-Intended design: no WhatsApp flow or web form for manual milk entry. Only the ESP32 device
-via `/api/hardware/milk-record` with `X-Device-Key` header auth.
+The earlier "hardware only, no manual entry" rule was resolved this way: a **control
+lechero** is not daily measurement, it is a spot check of the whole herd, and it is what
+the farm actually does today. The two coexist through `produccion_leche.fuente`
+(`manual` | `control` | `hardware`). Still no per-ordeño manual entry flow — that is what
+the ESP32 is for.
+
+⚠️ **The total is never stored.** AM → `ordeno='manana'`, PM → `ordeno='tarde'`, total is
+derived by summing. `analytics.ts` adds up `litros` across all rows without looking at
+`ordeno`, so a third `'total'` row doubles the herd's production.
 
 ### Key files
 - `src/lib/handler.ts` (~115 lines) — orchestrator: auth, global shortcuts, routing tables. No step logic.
@@ -98,6 +109,7 @@ src/lib/
   domain/               ← ⚠️ ALL writes live here — see the contract below
     schemas.ts          ← zod schemas mirroring the DB CHECK constraints
     animales · sanidad · reproduccion · pesajes · mortalidad
+    chequeos · protocolos · leche      ← hoja de vida (sin canal de bot todavía)
   flows/                ← conversation only: prompts, steps, message wording
     animal.ts           ← registrar / categorizar animal
     salud.ts            ← pick + vacunación, tratamiento, desparasitación
@@ -121,6 +133,15 @@ two places, the two eventually drift, and the failure mode is contaminated milk 
 
 - Domain functions validate with zod (`schemas.ts`), write, and **return what the caller
   needs to render** — derived dates, created ids, and whether the animal had to be created.
+- **Any product applied goes through `sanidad.aplicarProducto()`**, whatever event it
+  belongs to — the intramammary of a dry-off, the hormone of a check-up, each step of a
+  synchronization protocol. That is the single place `retiro_leche_hasta` is derived from
+  `cat_medicamentos`. A product stored as loose columns on its own table is a withdrawal
+  period the milk alerts cannot see.
+- **`findAnimal` vs `findOrCreateAnimal` is a channel decision.** WhatsApp flows create on
+  a miss (the vaquero is in the field and cannot fix a typo there); dashboard-only writes
+  — chequeos, protocolos, control de leche — look up and **fail**, because a typo'd arete
+  on a form would silently add a ghost animal to the inventory.
 - Flows keep their per-step validation: that is what produces the friendly WhatsApp
   messages. The schemas are the backstop underneath, not a replacement.
 - Every write takes an optional `fecha`, defaulting to the farm's today and rejecting the
@@ -221,7 +242,13 @@ CREATE TABLE whatsapp_user_fincas (
 
 Apply SQL in this order in the Supabase SQL Editor (all files now live in `db/`):
 `db/schema.sql` → `db/alerts_views.sql` → `db/backup.sql` → `db/01_bot_schema.sql`
-→ `db/02_multitenant.sql`
+→ `db/02_multitenant.sql` → `db/03_hoja_de_vida.sql`
+
+⚠️ **`03_hoja_de_vida.sql` is the final definition of `vw_historial_animal` and
+`vw_respaldo_completo`.** The versions in `schema.sql` and `backup.sql` are base
+definitions, valid at their point in the chain (the tables they gain later do not
+exist yet). Re-running either file on its own without re-running `03` silently
+drops the newest event types from the animal's history and from every backup.
 
 **No versioned migrations** — SQL is idempotent (`CREATE TABLE IF NOT EXISTS`,
 `CREATE OR REPLACE VIEW`). Preserve that idempotency in any new SQL.
@@ -257,15 +284,48 @@ or `select * from vw_respaldo_completo;`, stored outside the database.
 ✅ animales · eventos_reproductivos · produccion_leche
 ✅ eventos_sanitarios · pesajes · movimientos · confirmaciones_pendientes
 
+-- Hoja de vida (db/03_hoja_de_vida.sql). FK compuesta (animal_id, finca_id) →
+-- animales(id, finca_id): una FK simple dejaría cruzar fincas sin que RLS lo vea.
+✅ chequeos_reproductivos · protocolos_sincronizacion · protocolo_aplicaciones
+✅ controles_leche  (el detalle por vaca va en produccion_leche, no en tabla aparte)
+
 -- Bot
 ✅ whatsapp_users (flat shape today — N:M rework deferred) · whatsapp_sessions
 🎯 whatsapp_user_fincas
 ✅ cat_vacunas · cat_medicamentos · cat_diagnosticos   (nullable finca_id = global)
 ✅ cat_razas · cat_tecnicos · cat_causas_mortalidad    (nullable finca_id = global)
 
--- Views
-✅ vw_historial_animal · vw_alertas · vw_respaldo_completo
+-- Views  (las de 03 llevan security_invoker = true; sin él una vista corre con
+--         los permisos de su dueño y evade el RLS de quien consulta — inocuo bajo
+--         service_role, fuga entre fincas en Fase 1)
+✅ vw_historial_animal · vw_alertas · vw_respaldo_completo · vw_genealogia
 ```
+
+### Vocabulario clínico del chequeo reproductivo
+Confirmado con el fundador. Los CHECK de `chequeos_reproductivos` y los enums de
+`domain/schemas.ts` son espejo de esto — cambiar uno sin el otro produce un error
+de Postgres que el veterinario no puede accionar.
+
+| Estado | Significado | → `estado_reproductivo` |
+|---|---|---|
+| `P` | preñada | `prenada` |
+| `V` | vacía | `vacia` |
+| `SE` | servida | `servida` |
+| `VAS` | vacía en anestro **superficial** | `vacia` |
+| `VAP` | vacía en anestro **profundo** | `vacia` |
+| `PP` | post-parto | `parida` |
+| `RECHE` | **rechequeo** — volver a ecografiar | *(ninguno)* |
+
+**`RECHE` no es descarte.** Es "el vet no pudo definir, hay que volver a mirarla".
+El animal **conserva** su estado; ponerle uno sería inventar un hallazgo que el
+veterinario no hizo. Lo que sí genera es una alerta: `getRechequeosPendientes()`
+en `src/lib/alerts.ts` busca los animales cuyo chequeo **más reciente** quedó en
+`RECHE`, y por eso el rechequeo **se cierra solo** al registrar el chequeo
+siguiente — no hay bandera que mantener, que es justo lo que se olvidaría.
+
+Estructuras ováricas: `CL1/CL2/CL3` = cuerpo lúteo grado 1/2/3 · `MF` =
+multifolicular · `QF` = quiste folicular · `QL` = quiste luteínico ·
+`F8mm/F10mm/F12mm` = folículo por tamaño · `FPre` = folículo preovulatorio.
 
 ### WhatsApp session state machine
 ```typescript
@@ -296,6 +356,7 @@ from the naming scheme above.
 ✅ reproduccion.servicio (covers both IA and monta) · reproduccion.dxprenez
 ✅ reproduccion.parto · reproduccion.pick — sub-menu
 🎯 reproduccion.celo — not implemented
+🎯 reproduccion.secado — domain done (`registrarSecado`), bot flow pending (Bloque C)
 ✅ pesaje (individual)          🎯 pesaje.lote
 ✅ mortalidad
 ✅ animal — registrar + categorizar in one flow (branches on whether the arete exists)
@@ -350,11 +411,36 @@ forms built before auth would need authorization retrofitted into nine write pat
       (keep Basic Auth behind an env flag during migration), and moving the dashboard off
       `service_role`, which activates the fail-closed RLS — a bad `finca_id` claim shows an
       empty farm rather than an error. Closes items #6 and the deferred `whatsapp_user_fincas`.
+      **Includes a user-management module in the dashboard for the `dueño` role** — create
+      users (nombre, email, rol, teléfono), change a user's role, activate/deactivate access,
+      see last login. Not an extra: this is what lets each farm owner administer their own
+      people without anyone touching code or Supabase, so it is part of the SaaS jump, not
+      of Phase 0 convenience.
 - [ ] **Fase 3 — dashboard forms** — the nine flows as web forms via Server Actions. Notes:
       `findOrCreateAnimal` must **confirm before creating** from a form (a typo'd arete would
       silently create a ghost animal); backdating invalidates the assumption behind
       `db/diagnostics/fechas_desfasadas_utc.sql`, which must be updated in the same phase;
       and there is still no `created_by` column to record who wrote what.
+
+### Hoja de vida del animal — Bloque A ✅, B / C / D pendientes
+Expansion agreed 2026-08-11: full animal record, veterinary reproductive check-ups,
+synchronization protocols, dry-off, manual milk control, unified timeline, family tree.
+
+- [x] ~~**Bloque A — schema + domain + tests**~~ — `db/03_hoja_de_vida.sql`, `domain/`
+      (chequeos · protocolos · leche · `registrarSecado` · `aplicarProducto`), rechequeo
+      alert, 184 tests. ⚠️ The SQL is written but **not applied** in Supabase.
+- [ ] **Bloque B — animal record, read-only** — `/dashboard/animales/[arete]`: unified
+      timeline off `vw_historial_animal` and family tree off `vw_genealogia`. No writes, so
+      it ships safely behind the current Basic Auth. Also: relabel `totalLitros30d`, which
+      now means "sum of the control days", not monthly production.
+- [ ] **Bloque C — dry-off flow in the bot** — `registrarSecado` is done; it needs the
+      WhatsApp state machine (`flows/reproduccion.ts` + `handler.ts` + `menu.ts`). Dry-off
+      happens in the potrero, not at a desk.
+- [ ] **Bloque D — dashboard forms** — chequeo, protocolo and milk control (mobile-first,
+      the whole herd on one screen). **Goes after Fase 2, by explicit decision**: these are
+      the vet's forms, and without roles the vet would log in with the owner's password.
+      Also pending here: photo upload (Supabase Storage bucket + signed URLs) for the
+      `foto_url` column, which exists but has no writer.
 
 Deferred from the earlier dashboard review:
 
@@ -366,9 +452,10 @@ Deferred from the earlier dashboard review:
       are fetched whole and aggregated in JS. PostgREST caps rows per response (Supabase
       commonly defaults to 1000); past that, GDP and IEP are silently computed on truncated
       data. Verify the project's `max-rows` and paginate or push the aggregation into SQL.
-- [ ] **8. `produccion_leche` has no writer** — the milk section can never populate. Note the
-      contradiction to resolve: the dashboard placeholder promises a WhatsApp entry flow,
-      while the architecture decision above is hardware-only via the ESP32 endpoint. Fix one.
+- [x] ~~**8. `produccion_leche` has no writer**~~ — resolved by the manual milk control
+      (`domain/leche.ts`), which writes into `produccion_leche` with `fuente='control'`.
+      The hardware-only contradiction is settled: control lechero and ESP32 coexist via
+      `fuente`. Its dashboard form is Bloque D.
 - [ ] **9. "Sin 2º pesaje" undercounts** — `analytics.ts` only walks animals that already have
       at least one weighing, so animals never weighed are invisible in the peso section.
 - [ ] **10. Promote the mortality cause to a column** — `flows/mortalidad.ts` writes it into
@@ -424,7 +511,7 @@ Deferred from the earlier dashboard review:
 ---
 
 ## Tests
-`npm test` (Vitest, run mode) · `npm run test:watch`. 128 tests. Test-only dependency — the
+`npm test` (Vitest, run mode) · `npm run test:watch`. 184 tests. Test-only dependency — the
 Docker production build is untouched.
 
 - `tests/helpers/fake-supabase.ts` — in-memory Supabase covering the query surface the app
@@ -438,6 +525,12 @@ Docker production build is untouched.
 - `tests/lib/dashboard.test.ts` renders the server component to static HTML — that is what
   verifies the dashboard actually degrades instead of showing zeros.
 - Both flow suites assert `finca_id` on every written row — keep that guard.
+  `tests/lib/hoja-de-vida.test.ts` carries the same guard for the newer domain modules.
+- `tests/lib/hoja-de-vida.test.ts` also pins the two cross-cutting rules that are easy to
+  "simplify" away: a product applied during a chequeo/protocolo/secado must land in
+  `eventos_sanitarios` with its withdrawal date, and a protocol's IA must create a real
+  `servicio` event. There is a regression test that dries off a pregnant cow and checks she
+  is still listed under próximos partos.
 
 ### Read-path error contract
 Supabase reports failures in `error` rather than throwing, so `data || []` turns a broken
@@ -458,7 +551,9 @@ query into a convincing empty result. Every read goes through `unwrapList()` in
 
 ---
 
-*Last updated: dashboard rework Fase 0 (domain layer) and Fase 1 (Tailwind v4 redesign)
-done. Fase 2 (auth by role) and Fase 3 (forms) pending.*
+*Last updated: hoja de vida Bloque A done (db/03_hoja_de_vida.sql + domain chequeos /
+protocolos / leche / secado + rechequeo alert, 184 tests). SQL written, NOT yet applied in
+Supabase. Next: Bloque B (animal record, read-only) → Bloque C (dry-off bot flow) → Fase 2
+(auth by role + user management) → Bloque D (forms).*
 *Sections marked 🎯 are decided design, not implemented — verify against code before relying on them.*
 *Full project brief: `docs/README-ganaderia.md` (⚠️ outdated — describes n8n as primary).*
