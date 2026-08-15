@@ -94,7 +94,11 @@ derived by summing. `analytics.ts` adds up `litros` across all rows without look
 - `src/lib/handler.ts` (~115 lines) — orchestrator: auth, global shortcuts, routing tables. No step logic.
 - `src/app/api/whatsapp/webhook/route.ts` — Meta webhook (GET verify + POST).
 - `src/app/api/cron/daily-alerts/route.ts`, `.../cron/backup/route.ts` — guarded by `CRON_SECRET`.
-- `src/middleware.ts` — Basic Auth on `/dashboard`; fail-closed (503 if password missing). Keep it that way.
+- `src/middleware.ts` — guards `/dashboard`: Supabase session cookie → pass (the page
+  verifies for real); else `AUTH_LEGACY_BASIC=1` → the old Basic Auth, still fail-closed
+  (503 if the password is missing); else redirect to `/login`. Keep it that way.
+- `src/lib/auth/` — `roles.ts` (permission matrix), `server.ts` (`getSesion` /
+  `requerirPermiso`), `usuarios.ts` (user management). See the Fase 2 section below.
 - `src/lib/tenant.ts` — `FINCA_ID` constant (Phase 0 single tenant). Every INSERT must pass it.
 - `src/lib/dates.ts` — farm-timezone calendar dates. **Every** stored `fecha` goes through it.
 
@@ -242,7 +246,7 @@ CREATE TABLE whatsapp_user_fincas (
 
 Apply SQL in this order in the Supabase SQL Editor (all files now live in `db/`):
 `db/schema.sql` → `db/alerts_views.sql` → `db/backup.sql` → `db/01_bot_schema.sql`
-→ `db/02_multitenant.sql` → `db/03_hoja_de_vida.sql`
+→ `db/02_multitenant.sql` → `db/03_hoja_de_vida.sql` → `db/04_auth_roles.sql`
 
 ⚠️ **`03_hoja_de_vida.sql` is the final definition of `vw_historial_animal` and
 `vw_respaldo_completo`.** The versions in `schema.sql` and `backup.sql` are base
@@ -289,9 +293,14 @@ or `select * from vw_respaldo_completo;`, stored outside the database.
 ✅ chequeos_reproductivos · protocolos_sincronizacion · protocolo_aplicaciones
 ✅ controles_leche  (el detalle por vaca va en produccion_leche, no en tabla aparte)
 
+-- Tablero: usuarios y roles (db/04_auth_roles.sql). usuarios.id ES auth.users.id;
+-- el rol vive en usuario_fincas, POR FINCA, no en el perfil. Sin columna de
+-- contraseña: eso es de auth.users.
+✅ usuarios · usuario_fincas
+
 -- Bot
 ✅ whatsapp_users (flat shape today — N:M rework deferred) · whatsapp_sessions
-🎯 whatsapp_user_fincas
+🎯 whatsapp_user_fincas   (el equivalente del bot a usuario_fincas; sigue pendiente)
 ✅ cat_vacunas · cat_medicamentos · cat_diagnosticos   (nullable finca_id = global)
 ✅ cat_razas · cat_tecnicos · cat_causas_mortalidad    (nullable finca_id = global)
 
@@ -376,6 +385,10 @@ from the naming scheme above.
   depend on a network call.
 - **Validation:** `zod` — schemas in `src/lib/domain/schemas.ts`
 - **DB:** Supabase (Postgres) via `@supabase/supabase-js`, `service_role` key
+- **Auth (dashboard):** Supabase Auth, email + password, via `@supabase/ssr` (cookies).
+  The anon key is used **only** to validate the session; every read/write of farm data
+  still goes through the `service_role` client. Two clients, two jobs — see
+  `src/lib/auth/server.ts`.
 - **Messaging:** Meta WhatsApp Cloud API — interactive templates only
 - **AI:** 🎯 Claude API (Anthropic) — owner open queries + anomaly detection only (not integrated yet; OpenAI inside n8n WF-01 is what runs today)
 - **Orchestration:** self-hosted n8n — WF-00 and WF-01 only
@@ -396,7 +409,7 @@ from the naming scheme above.
       regression tests. Only Supabase and `fetch` are faked — see `tests/helpers/`.
 - [ ] **5. Meta template approval** — start Meta approval process for proactive alert templates
 
-### Dashboard rework — Fase 0 y 1 ✅, Fase 2 y 3 pendientes
+### Dashboard rework — Fases 0, 1 y 2 ✅, Fase 3 pendiente
 Agreed plan: **0** extract domain → **1** visual redesign → **2** auth by role → **3** forms.
 The order is deliberate: forms built before the domain extraction would duplicate the
 business rules, forms built before the redesign would need restyling nine times over, and
@@ -406,22 +419,34 @@ forms built before auth would need authorization retrofitted into nine write pat
       call it. 99 existing tests passed with no expect touched; 29 domain tests added.
 - [x] ~~**Fase 1 — visual redesign**~~ — Tailwind v4, agro palette (`campo`/`tierra`),
       sidebar shell, `src/components/ui/`.
-- [ ] **Fase 2 — auth by role** — Supabase Auth + `usuarios`/`usuario_fincas`, replacing
-      Basic Auth. Roles: dueño · admin · veterinario · vaquero, enforced **server-side** in
-      every write, not by hiding buttons. Two hazards: locking the owner out of production
-      (keep Basic Auth behind an env flag during migration), and moving the dashboard off
-      `service_role`, which activates the fail-closed RLS — a bad `finca_id` claim shows an
-      empty farm rather than an error. Closes items #6 and the deferred `whatsapp_user_fincas`.
-      **Includes a user-management module in the dashboard for the `dueño` role** — create
-      users (nombre, email, rol, teléfono), change a user's role, activate/deactivate access,
-      see last login. Not an extra: this is what lets each farm owner administer their own
-      people without anyone touching code or Supabase, so it is part of the SaaS jump, not
-      of Phase 0 convenience.
+- [x] ~~**Fase 2 — auth by role**~~ — `db/04_auth_roles.sql` **applied in Supabase**
+      (2026-08-15) + `src/lib/auth/` + `/login` + `/dashboard/usuarios`. Login is **email +
+      password** (Supabase Auth, `@supabase/ssr`); the `usuarios` profile hangs off
+      `auth.users` by id and the role lives in `usuario_fincas`, per farm.
+
+      Three decisions to respect before changing anything here:
+      - **The data connection stays on `service_role`.** Moving it to the user's JWT was
+        deliberately NOT done: RLS is fail-closed, and a wrong `finca_id` claim shows an
+        empty farm instead of an error. Isolation today = the role matrix + the explicit
+        `finca_id` filter (item #6, closed in the same batch). RLS stays dormant.
+      - **The bot was not touched.** `whatsapp_users` still authorises by phone, so
+        `whatsapp_user_fincas` is STILL deferred — the two authentications must not move in
+        the same deploy.
+      - **The guard goes in every page and every server action, never only in the layout.**
+        In the App Router the layout and the page render in parallel, so a layout-only guard
+        does not stop the page from querying. Hiding the Usuarios link is courtesy, not
+        authorization.
+
+      Bootstrap door: `AUTH_LEGACY_BASIC=1` keeps the old Basic Auth alive acting as
+      `dueno`, which is what lets the owner create the first real user without being locked
+      out. Turn it off only after the new login works — `DEPLOY.md §8`.
 - [ ] **Fase 3 — dashboard forms** — the nine flows as web forms via Server Actions. Notes:
-      `findOrCreateAnimal` must **confirm before creating** from a form (a typo'd arete would
-      silently create a ghost animal); backdating invalidates the assumption behind
-      `db/diagnostics/fechas_desfasadas_utc.sql`, which must be updated in the same phase;
-      and there is still no `created_by` column to record who wrote what.
+      every action starts with `await requerirPermiso(...)` — it throws, so a forgotten
+      check cannot read as success; `findOrCreateAnimal` must **confirm before creating**
+      from a form (a typo'd arete would silently create a ghost animal); backdating
+      invalidates the assumption behind `db/diagnostics/fechas_desfasadas_utc.sql`, which
+      must be updated in the same phase; and there is still no `created_by` column to record
+      who wrote what — now that there is a real session, that column is worth adding here.
 
 ### Hoja de vida del animal — Bloques A ✅ B ✅ C ✅, D pendiente
 Expansion agreed 2026-08-11: full animal record, veterinary reproductive check-ups,
@@ -450,17 +475,22 @@ synchronization protocols, dry-off, manual milk control, unified timeline, famil
       through `aplicarProducto()` → `eventos_sanitarios`. The success message shows the
       withdrawal date **and the expected calving date**, so `seca` is not read as `vacia`.
 - [ ] **Bloque D — dashboard forms** — chequeo, protocolo and milk control (mobile-first,
-      the whole herd on one screen). **Goes after Fase 2, by explicit decision**: these are
-      the vet's forms, and without roles the vet would log in with the owner's password.
+      the whole herd on one screen). It waited for Fase 2 — these are the vet's forms, and
+      without roles the vet would log in with the owner's password — and **that block is now
+      lifted**: guard each action with `requerirPermiso('chequeo.registrar')`,
+      `'protocolo.registrar'` and `'leche.registrar'`, which is exactly how the matrix in
+      `auth/roles.ts` already splits them (the vet has the first two and not the third).
       Also pending here: photo upload (Supabase Storage bucket + signed URLs) for the
       `foto_url` column, which exists but has no writer.
 
 Deferred from the earlier dashboard review:
 
-- [ ] **6. Filter dashboard queries by `finca_id`** — ⚠️ Phase 1 blocker. `analytics.ts` and
-      `alerts.ts` read every row of every table with no tenant filter, and RLS is dormant
-      under `service_role`, so there is no backstop. Harmless with one farm; breaks the day
-      a second one is onboarded.
+- [x] ~~**6. Filter dashboard queries by `finca_id`**~~ — done with Fase 2. Every read in
+      `analytics.ts`, `alerts.ts` and `ficha.ts` carries `.eq('finca_id', FINCA_ID)`. RLS is
+      still dormant under `service_role`, so that `.eq()` **is** the tenant isolation, not a
+      second belt — any new read must carry it. The test seeds get the column stamped by
+      `tests/helpers/db.ts`, mirroring the DB DEFAULT; seed a different `finca_id` on
+      purpose to test the isolation.
 - [ ] **7. Bound the unpaginated queries** — `animales`, `pesajes` and `eventos_reproductivos`
       are fetched whole and aggregated in JS. PostgREST caps rows per response (Supabase
       commonly defaults to 1000); past that, GDP and IEP are silently computed on truncated
@@ -479,8 +509,12 @@ Deferred from the earlier dashboard review:
 
 ## Secrets — hard rules
 - **`.env.local` holds live production credentials** (Supabase `service_role` JWT,
-  Meta token, `CRON_SECRET`, `DASHBOARD_PASSWORD`). It is gitignored. **Never read it into
-  context, never print its values, never paste them into a workflow or commit.**
+  `SUPABASE_ANON_KEY`, Meta token, `CRON_SECRET`, `DASHBOARD_PASSWORD`). It is gitignored.
+  **Never read it into context, never print its values, never paste them into a workflow
+  or commit.**
+- Temporary passwords generated for a new user are shown once in the browser and are
+  **never stored** — not in `usuarios`, not in a log, not in a URL. That is why the two
+  screens that show one are the only `'use client'` components in the project.
 - Only `.env.example` is tracked. Keep it that way.
 - Secrets belong in Easypanel env vars and n8n credentials — never hardcoded.
 
@@ -524,7 +558,7 @@ Deferred from the earlier dashboard review:
 ---
 
 ## Tests
-`npm test` (Vitest, run mode) · `npm run test:watch`. 207 tests. Test-only dependency — the
+`npm test` (Vitest, run mode) · `npm run test:watch`. 232 tests. Test-only dependency — the
 Docker production build is untouched.
 
 - `tests/helpers/fake-supabase.ts` — in-memory Supabase covering the query surface the app
@@ -540,6 +574,13 @@ Docker production build is untouched.
 - `tests/lib/ficha.test.ts` does the same for `/dashboard/animales/[arete]`, seeding
   `vw_historial_animal` and `vw_genealogia` as plain tables in the fake. Its load-bearing
   case is the one separating "animal no encontrado" from "no se pudo consultar".
+- `tests/helpers/auth.ts` fakes the session (`getSesion`) the way `db.ts` fakes the
+  database, so a page test can run as any role or with no session at all. Both page suites
+  assert that WITHOUT a session nothing of the herd is rendered — the guard is per page,
+  not in the layout.
+- `tests/lib/auth.test.ts` pins Fase 2: the whole permission matrix, the compensations of
+  creating a user (there are no transactions — a failed profile must delete the Auth
+  account), and the rule that the farm can never be left without an active `dueno`.
 - Both flow suites assert `finca_id` on every written row — keep that guard.
   `tests/lib/hoja-de-vida.test.ts` carries the same guard for the newer domain modules.
 - `tests/lib/hoja-de-vida.test.ts` also pins the two cross-cutting rules that are easy to
@@ -567,9 +608,11 @@ query into a convincing empty result. Every read goes through `unwrapList()` in
 
 ---
 
-*Last updated 2026-08-15: hoja de vida Bloques A + B + C done. `db/03_hoja_de_vida.sql` is
-APPLIED in Supabase, `/dashboard/animales/[arete]` renders the unified timeline and the
-family tree read-only (`src/lib/ficha.ts`), and `reproduccion.secado` is live in the bot
-(207 tests). Next: Fase 2 (auth by role + user management) → Bloque D (forms).*
+*Last updated 2026-08-15: hoja de vida A+B+C and dashboard Fase 2 done.
+`db/03_hoja_de_vida.sql` and `db/04_auth_roles.sql` are both APPLIED in Supabase. The
+dashboard logs in with email + password, authorises by role server-side, ships the user
+management module, and every read filters by `finca_id` (item #6 closed). The bot is
+unchanged — it still authorises by phone. 232 tests. Next: Bloque D (vet forms, now
+unblocked) → Fase 3 (the nine flows as forms) → `whatsapp_user_fincas`.*
 *Sections marked 🎯 are decided design, not implemented — verify against code before relying on them.*
 *Full project brief: `docs/README-ganaderia.md` (⚠️ outdated — describes n8n as primary).*
