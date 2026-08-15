@@ -354,9 +354,10 @@ from the naming scheme above.
 ✅ salud.vacunacion · salud.tratamiento · salud.desparasitacion
 ✅ salud.pick — sub-menu that routes into the three above
 ✅ reproduccion.servicio (covers both IA and monta) · reproduccion.dxprenez
-✅ reproduccion.parto · reproduccion.pick — sub-menu
+✅ reproduccion.parto · reproduccion.secado
+✅ reproduccion.pick — sub-menu. Sent as a LIST, not buttons: Meta caps interactive
+   buttons at 3 and there are four options. A fifth flow just adds a row (cap is 10).
 🎯 reproduccion.celo — not implemented
-🎯 reproduccion.secado — domain done (`registrarSecado`), bot flow pending (Bloque C)
 ✅ pesaje (individual)          🎯 pesaje.lote
 ✅ mortalidad
 ✅ animal — registrar + categorizar in one flow (branches on whether the arete exists)
@@ -422,7 +423,7 @@ forms built before auth would need authorization retrofitted into nine write pat
       `db/diagnostics/fechas_desfasadas_utc.sql`, which must be updated in the same phase;
       and there is still no `created_by` column to record who wrote what.
 
-### Hoja de vida del animal — Bloque A ✅ y B ✅, C / D pendientes
+### Hoja de vida del animal — Bloques A ✅ B ✅ C ✅, D pendiente
 Expansion agreed 2026-08-11: full animal record, veterinary reproductive check-ups,
 synchronization protocols, dry-off, manual milk control, unified timeline, family tree.
 
@@ -441,9 +442,13 @@ synchronization protocols, dry-off, manual milk control, unified timeline, famil
       absolute (`/dashboard#…`) — the layout wraps the ficha too. `totalLitros30d` is now
       labelled "Litros medidos" with the hint that it sums the control days, not the month;
       the field name stayed, only the label changed.
-- [ ] **Bloque C — dry-off flow in the bot** — `registrarSecado` is done; it needs the
-      WhatsApp state machine (`flows/reproduccion.ts` + `handler.ts` + `menu.ts`). Dry-off
-      happens in the potrero, not at a desk.
+- [x] ~~**Bloque C — dry-off flow in the bot**~~ — `reproduccion.secado` in
+      `flows/reproduccion.ts` + `handler.ts`; `menu.ts` untouched, it hangs off the
+      reproduction sub-menu. One cow at a time **by the founder's decision**: product and
+      dose change per cow, and a batch flow would flatten them. The intramammary is
+      optional (secado seco is a real case) and, when there is one, the domain routes it
+      through `aplicarProducto()` → `eventos_sanitarios`. The success message shows the
+      withdrawal date **and the expected calving date**, so `seca` is not read as `vacia`.
 - [ ] **Bloque D — dashboard forms** — chequeo, protocolo and milk control (mobile-first,
       the whole herd on one screen). **Goes after Fase 2, by explicit decision**: these are
       the vet's forms, and without roles the vet would log in with the owner's password.
@@ -519,7 +524,7 @@ Deferred from the earlier dashboard review:
 ---
 
 ## Tests
-`npm test` (Vitest, run mode) · `npm run test:watch`. 200 tests. Test-only dependency — the
+`npm test` (Vitest, run mode) · `npm run test:watch`. 207 tests. Test-only dependency — the
 Docker production build is untouched.
 
 - `tests/helpers/fake-supabase.ts` — in-memory Supabase covering the query surface the app
@@ -562,9 +567,9 @@ query into a convincing empty result. Every read goes through `unwrapList()` in
 
 ---
 
-*Last updated 2026-08-15: hoja de vida Bloque A + B done. `db/03_hoja_de_vida.sql` is
-APPLIED in Supabase, and `/dashboard/animales/[arete]` renders the unified timeline and the
-family tree read-only (`src/lib/ficha.ts`, 200 tests). Next: Bloque C (dry-off bot flow) →
-Fase 2 (auth by role + user management) → Bloque D (forms).*
+*Last updated 2026-08-15: hoja de vida Bloques A + B + C done. `db/03_hoja_de_vida.sql` is
+APPLIED in Supabase, `/dashboard/animales/[arete]` renders the unified timeline and the
+family tree read-only (`src/lib/ficha.ts`), and `reproduccion.secado` is live in the bot
+(207 tests). Next: Fase 2 (auth by role + user management) → Bloque D (forms).*
 *Sections marked 🎯 are decided design, not implemented — verify against code before relying on them.*
 *Full project brief: `docs/README-ganaderia.md` (⚠️ outdated — describes n8n as primary).*
