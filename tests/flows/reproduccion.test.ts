@@ -312,6 +312,154 @@ describe('reproduccion.parto', () => {
 });
 
 // =====================================================================
+describe('reproduccion.secado', () => {
+  const sanitarios = () => db.insertsInto('eventos_sanitarios');
+
+  const walkToConfirm = (...extra: Parameters<typeof handleMessage>[0][]) =>
+    converse(
+      listPick('menu:reproduccion'),
+      listPick('repro:secado'),
+      text('045'),
+      ...extra,
+    );
+
+  it('offers secado in the reproduction sub-menu', async () => {
+    await handleMessage(listPick('menu:reproduccion'));
+
+    expect(lastOptionIds()).toEqual([
+      'repro:servicio', 'repro:dxprenez', 'repro:parto', 'repro:secado',
+    ]);
+  });
+
+  it('routes the intramammary through eventos_sanitarios with its withdrawal date', async () => {
+    await walkToConfirm(
+      button('sec:si'),
+      listPick('secmed:Oxitetraciclina'),
+      button('secdosis:4 cánulas'),
+    );
+
+    expect(lastBody()).toContain('Producto: Oxitetraciclina');
+    expect(lastBody()).toContain('Dosis: 4 cánulas');
+
+    await handleMessage(button('conf:si'));
+
+    const [animal] = db.insertsInto('animales');
+    // El producto NO vive en columnas del evento reproductivo: va como fila de
+    // eventos_sanitarios, que es donde se deriva retiro_leche_hasta.
+    expect(sanitarios()).toEqual([
+      expect.objectContaining({
+        finca_id: FINCA_ID,
+        animal_id: animal.id,
+        tipo: 'tratamiento',
+        fecha: TODAY,
+        producto: 'Oxitetraciclina',
+        dosis: '4 cánulas',
+        via: 'intramamaria',
+        diagnostico: 'Secado',
+        retiro_leche_hasta: '2026-08-07', // 72 h de catálogo → 3 días
+      }),
+    ]);
+
+    expect(eventos()).toEqual([
+      expect.objectContaining({
+        finca_id: FINCA_ID,
+        animal_id: animal.id,
+        tipo: 'secado',
+        fecha: TODAY,
+        evento_sanitario_id: sanitarios()[0].id,
+      }),
+    ]);
+
+    expect(db.updatesTo('animales')).toEqual([
+      expect.objectContaining({
+        patch: { estado_reproductivo: 'seca' },
+        filters: [['id', animal.id]],
+      }),
+    ]);
+    expect(lastBody()).toContain('Retiro de leche hasta: 2026-08-07');
+  });
+
+  it('dries a cow off with no product at all', async () => {
+    await walkToConfirm(button('sec:no'));
+
+    expect(lastBody()).toContain('Sin producto (secado seco)');
+
+    await handleMessage(button('conf:si'));
+
+    expect(sanitarios()).toHaveLength(0);
+    expect(eventos()[0]).toMatchObject({ tipo: 'secado', evento_sanitario_id: null });
+    expect(db.updatesTo('animales')[0].patch).toEqual({ estado_reproductivo: 'seca' });
+    expect(lastBody()).not.toContain('Retiro de leche');
+  });
+
+  it('derives the expected calving date from the last service, not from today', async () => {
+    db.rows('animales').push({ id: 'a-045', arete: '045', sexo: 'H', finca_id: FINCA_ID });
+    db.rows('eventos_reproductivos').push({
+      id: 'e-1', animal_id: 'a-045', tipo: 'servicio', fecha: '2026-01-10', finca_id: FINCA_ID,
+    });
+
+    await walkToConfirm(button('sec:no'));
+    await handleMessage(button('conf:si'));
+
+    // 2026-01-10 + 283 días de gestación.
+    expect(eventos()[0].fecha_probable_parto).toBe('2026-10-20');
+    expect(lastBody()).toContain('Parto probable: 2026-10-20');
+  });
+
+  it('accepts a free-text dose when the vaquero picks "Otra"', async () => {
+    await walkToConfirm(
+      button('sec:si'),
+      listPick('secmed:Penicilina'),
+      button('secdosis:otra'),
+      text('1 cánula por cuarto'),
+    );
+
+    expect(lastBody()).toContain('Dosis: 1 cánula por cuarto');
+
+    await handleMessage(button('conf:si'));
+
+    expect(sanitarios()[0]).toMatchObject({
+      producto: 'Penicilina',
+      dosis: '1 cánula por cuarto',
+      retiro_leche_hasta: null, // el catálogo la trae en 0 horas
+    });
+  });
+
+  it('saves nothing when cancelled at the confirmation step', async () => {
+    await walkToConfirm(
+      button('sec:si'),
+      listPick('secmed:Oxitetraciclina'),
+      button('secdosis:2 cánulas'),
+      button('conf:no'),
+    );
+
+    expect(db.inserts).toHaveLength(0);
+    expect(db.updatesTo('animales')).toHaveLength(0);
+    expect(lastBody()).toContain('Cancelado');
+    expect(session().current_flow).toBeNull();
+  });
+
+  it('stamps finca_id on both tables the dry-off writes', async () => {
+    await walkToConfirm(
+      button('sec:si'),
+      listPick('secmed:Oxitetraciclina'),
+      button('secdosis:4 cánulas'),
+      button('conf:si'),
+    );
+
+    const tables = db.inserts.map((i) => i.table);
+    expect(tables).toEqual(
+      expect.arrayContaining(['eventos_sanitarios', 'eventos_reproductivos']),
+    );
+    for (const { table, rows } of db.inserts) {
+      for (const row of rows) {
+        expect(row.finca_id, `${table} row is missing finca_id`).toBe(FINCA_ID);
+      }
+    }
+  });
+});
+
+// =====================================================================
 describe('multi-tenant guard', () => {
   it('stamps finca_id on every row the parto flow writes across all three tables', async () => {
     await converse(

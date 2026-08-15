@@ -46,6 +46,7 @@ const FLOWS: Record<string, Flow> = {
   'reproduccion.servicio': reproduccion.servicio,
   'reproduccion.dxprenez': reproduccion.dxPrenez,
   'reproduccion.parto': reproduccion.parto,
+  'reproduccion.secado': reproduccion.secado,
   'mortalidad': mortalidad,
   'consulta.ver': verAnimal,
 };

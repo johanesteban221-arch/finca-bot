@@ -1,10 +1,12 @@
-// Reproduction flows: servicio (IA / monta), diagnóstico de preñez, parto.
-// `pick` is the sub-menu that routes into the three.
+// Reproduction flows: servicio (IA / monta), diagnóstico de preñez, parto, secado.
+// `pick` is the sub-menu that routes into the four.
 
 import { sendText, sendButtons, sendList } from '../whatsapp';
 import { Session, saveSession, clearSession } from '../session';
 import { getCatalog } from '../catalogs';
-import { registrarServicio, registrarDxPrenez, registrarParto } from '../domain/reproduccion';
+import {
+  registrarServicio, registrarDxPrenez, registrarParto, registrarSecado,
+} from '../domain/reproduccion';
 import { sexoTitle } from '../animals';
 import { showMenu } from '../menu';
 import {
@@ -18,10 +20,18 @@ import {
 export const pick: Flow = {
   async start(to, session) {
     await saveSession({ ...session, current_flow: 'reproduccion.pick', current_step: 0, temp_data: {} });
-    await sendButtons(to, '🍼 *Reproducción*\n¿Qué vas a registrar?', [
-      { id: 'repro:servicio', title: '🐂 Servicio' },
-      { id: 'repro:dxprenez', title: '🔍 Dx preñez' },
-      { id: 'repro:parto', title: '🍼 Parto' },
+    // Lista y no botones: son cuatro opciones y Meta permite máximo 3 botones.
+    // Los ids no cambian, así que el enrutado de abajo sigue igual.
+    await sendList(to, '🍼 *Reproducción*\n¿Qué vas a registrar?', 'Elegir', [
+      {
+        title: 'Reproducción',
+        rows: [
+          { id: 'repro:servicio', title: '🐂 Servicio' },
+          { id: 'repro:dxprenez', title: '🔍 Dx preñez' },
+          { id: 'repro:parto', title: '🍼 Parto' },
+          { id: 'repro:secado', title: '🌵 Secado' },
+        ],
+      },
     ]);
   },
 
@@ -33,6 +43,7 @@ export const pick: Flow = {
       'repro:servicio': { flow: 'reproduccion.servicio', prompt: '🐂 *Servicio*\nEscribe el número de arete de la vaca: (ej. 045)' },
       'repro:dxprenez': { flow: 'reproduccion.dxprenez', prompt: '🔍 *Diagnóstico de preñez*\nEscribe el número de arete de la vaca: (ej. 045)' },
       'repro:parto': { flow: 'reproduccion.parto', prompt: '🍼 *Parto*\nEscribe el número de arete de la madre: (ej. 045)' },
+      'repro:secado': { flow: 'reproduccion.secado', prompt: '🌵 *Secado*\nEscribe el número de arete de la vaca: (ej. 045)' },
     };
 
     const route = routes[input];
@@ -271,6 +282,126 @@ export const parto: Flow = {
         return void sendText(
           to,
           `✅ Parto guardado\n🐄 Madre ${t.madre} — parida\n🍼 Cría ${t.cria} (${sexoTitle(t.sexo)}) registrada\n📅 ${today()}${MSG_MENU_HINT}`,
+        );
+      }
+      if (input === 'conf:no') {
+        await clearSession(to);
+        return void sendText(to, MSG_CANCEL_SHORT);
+      }
+      return;
+    }
+
+    await clearSession(to);
+    return void sendText(to, MSG_DESYNC);
+  },
+};
+
+// =====================================================================
+// Flow: Secado
+// step 1: arete -> step 2: ¿aplicó intramamario? (sí/no)
+//   sí -> step 3: producto (lista del catálogo) -> step 4: dosis -> step 5
+//   no -> step 5 directo
+// step 5: confirm -> save
+//
+// El secado se hace en el potrero, por eso vive en el bot y no en un formulario.
+// Va vaca por vaca a propósito (decisión del fundador): el producto y la dosis
+// cambian por vaca, y un flujo por lote las igualaría todas.
+//
+// El intramamario NO se guarda en columnas de eventos_reproductivos: el dominio
+// lo enruta por aplicarProducto() → eventos_sanitarios, que es el único lugar
+// donde se deriva retiro_leche_hasta. Los productos de secado son los de retiro
+// más largo de la finca; ese cálculo no se puede saltar.
+// =====================================================================
+export const secado: Flow = {
+  start: pick.start,
+
+  async handle(inc, session) {
+    const to = inc.from;
+    const input = inputOf(inc);
+    const t = session.temp_data;
+
+    // Con o sin producto se llega al mismo resumen; solo cambia el bloque del medio.
+    const confirmar = async () => {
+      await goToStep(session, 5, t);
+      const producto = t.producto
+        ? `💊 Producto: ${t.producto}\n💉 Dosis: ${t.dosis}`
+        : '💊 Sin producto (secado seco)';
+      return void sendConfirm(to, confirmBody(
+        '✅ *Confirmar secado*',
+        `🐄 Vaca: ${t.arete}\n${producto}\n📅 Fecha: ${today()}`,
+      ));
+    };
+
+    // Step 1: arete
+    if (session.current_step === 1 && inc.kind === 'text') {
+      const arete = (inc.text || '').trim();
+      if (!validArete(arete)) return void sendText(to, MSG_INVALID_ARETE);
+      t.arete = arete;
+      await goToStep(session, 2, t);
+      return void sendButtons(to, `🌵 Vaca *${arete}* — ¿Le aplicaste producto de secado?`, [
+        { id: 'sec:si', title: '💊 Sí, apliqué' },
+        { id: 'sec:no', title: '🚫 Sin producto' },
+      ]);
+    }
+
+    // Step 2: ¿hubo intramamario?
+    if (session.current_step === 2 && input.startsWith('sec:')) {
+      if (input === 'sec:no') {
+        t.producto = null;
+        t.dosis = null;
+        return confirmar();
+      }
+      const meds = await getCatalog('cat_medicamentos');
+      await goToStep(session, 3, t);
+      return void sendList(to, `💊 Vaca *${t.arete}* — ¿Qué producto aplicaste?`, 'Elegir producto', [
+        { title: 'Medicamentos', rows: meds.map((m: any) => ({ id: `secmed:${m.nombre}`, title: m.nombre })) },
+      ]);
+    }
+
+    // Step 3: producto
+    if (session.current_step === 3 && input.startsWith('secmed:')) {
+      t.producto = input.slice(7);
+      await goToStep(session, 4, t);
+      return void sendButtons(to, `💉 ${t.producto} — ¿Cuánto aplicaste?`, [
+        { id: 'secdosis:4 cánulas', title: '4 cánulas' },
+        { id: 'secdosis:2 cánulas', title: '2 cánulas' },
+        { id: 'secdosis:otra', title: 'Otra dosis' },
+      ]);
+    }
+
+    // Step 4: dosis. Es obligatoria cuando hubo producto — el schema del dominio
+    // lo exige, así que de aquí no se sale sin ella.
+    if (session.current_step === 4) {
+      if (input === 'secdosis:otra') {
+        t.awaiting = 'dosis_text';
+        await goToStep(session, 4, t);
+        return void sendText(to, '✍️ Escribe la dosis (ej. 1 cánula por cuarto):');
+      }
+      let dosis = '';
+      if (input.startsWith('secdosis:')) dosis = input.slice(9);
+      else if (t.awaiting === 'dosis_text' && inc.kind === 'text') dosis = (inc.text || '').trim();
+      else return;
+      if (!dosis) return void sendText(to, '✍️ Escribe la dosis (ej. 1 cánula por cuarto):');
+      t.dosis = dosis;
+      delete t.awaiting;
+      return confirmar();
+    }
+
+    // Step 5: confirmación
+    if (session.current_step === 5) {
+      if (input === 'conf:si') {
+        const { retiroLecheHasta, fechaProbableParto } = await registrarSecado({
+          arete: t.arete, producto: t.producto, dosis: t.dosis,
+        });
+        await clearSession(to);
+        const producto = t.producto ? `\n💊 ${t.producto} ${t.dosis}` : '\n💊 Sin producto';
+        const retiro = retiroLecheHasta ? `\n🥛 Retiro de leche hasta: ${retiroLecheHasta}` : '';
+        // La vaca queda 'seca' aunque siga preñada: mostrar el parto probable es
+        // lo que evita que alguien la dé por vacía al ver el estado.
+        const parto = fechaProbableParto ? `\n🍼 Parto probable: ${fechaProbableParto}` : '';
+        return void sendText(
+          to,
+          `✅ Secado guardado\n🐄 Vaca ${t.arete} — seca${producto}\n📅 ${today()}${retiro}${parto}${MSG_MENU_HINT}`,
         );
       }
       if (input === 'conf:no') {
