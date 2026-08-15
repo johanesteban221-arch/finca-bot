@@ -214,7 +214,8 @@ export async function getAnalytics(): Promise<Analytics> {
   //   · promLitrosDia y promPorVacaDia siguen siendo correctos — dividen entre
   //     los días CON registro, y un control mide el hato completo en un día.
   //   · totalLitros30d ya no es la producción del mes, sino la suma de los días
-  //     de control. La etiqueta del dashboard hay que ajustarla en el Bloque B.
+  //     de control. El nombre del campo se conserva; el tablero lo rotula
+  //     "Litros medidos" y aclara en el hint que no es el mes (Bloque B).
   const totalLitros30d = leche.reduce((s, r) => s + Number(r.litros || 0), 0);
   const diasConRegistro = new Set(leche.map((r) => r.fecha)).size;
   const vacasEnOrdeno = new Set(leche.map((r) => r.animal_id)).size;

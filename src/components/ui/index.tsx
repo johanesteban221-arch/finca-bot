@@ -139,9 +139,20 @@ export const TD = ({
   </td>
 );
 
-export const Arete = ({ children }: { children: ReactNode }) => (
-  <span className="font-semibold tabular-nums text-tierra-900">{children}</span>
-);
+// Con `href` el arete se vuelve la puerta a la hoja de vida del animal. Es un
+// <a> normal y no next/link a propósito: el tablero es force-dynamic y esta
+// carpeta no tiene componentes de cliente, así que un enlace duro no cuesta
+// nada y mantiene todo renderizable en el servidor (y en los tests).
+export const Arete = ({ children, href }: { children: ReactNode; href?: string }) => {
+  const clase = 'font-semibold tabular-nums text-tierra-900';
+  return href ? (
+    <a href={href} className={cn(clase, 'underline decoration-tierra-300 underline-offset-2 hover:text-campo-700 hover:decoration-campo-500')}>
+      {children}
+    </a>
+  ) : (
+    <span className={clase}>{children}</span>
+  );
+};
 
 export const EmptyRow = ({ cols, children }: { cols: number; children: ReactNode }) => (
   <tr>

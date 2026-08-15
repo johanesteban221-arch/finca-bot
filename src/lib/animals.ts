@@ -4,10 +4,11 @@ import { supabase } from './supabase';
 import { FINCA_ID } from './tenant';
 
 // Columns the animal record shows. Kept in one place so the WhatsApp ficha and
-// the dashboard ficha cannot drift apart.
-const CAMPOS_FICHA =
+// the dashboard ficha cannot drift apart — the dashboard one (src/lib/ficha.ts)
+// renders every field, WhatsApp shows the subset that fits a phone message.
+export const CAMPOS_FICHA =
   'id, arete, nombre, sexo, raza, categoria, estado, estado_reproductivo, ' +
-  'registro_oficial, fecha_nacimiento, foto_url';
+  'registro_oficial, fecha_nacimiento, foto_url, origen, peso_nacimiento, notas';
 
 // Finds an animal by arete (read-only). Returns null when it doesn't exist.
 export async function findAnimal(arete: string): Promise<any | null> {

@@ -2,6 +2,7 @@ import { getAnalytics } from '@/lib/analytics';
 import {
   getProximas, getRetiros, getPrenezPendientes, getRechequeosPendientes, PRENEZ_DIAS,
 } from '@/lib/alerts';
+import { fichaUrl } from '@/lib/ficha';
 import {
   Section, Card, Kpi, KpiRow, Badge, Table, TH, TD, Arete, EmptyRow, Bars, Banner,
 } from '@/components/ui';
@@ -108,7 +109,7 @@ export default async function Dashboard() {
                       )}
                       {a.reproductivo.proximosPartos.map((p) => (
                         <tr key={p.arete}>
-                          <TD><Arete>{p.arete}</Arete></TD>
+                          <TD><Arete href={fichaUrl(p.arete)}>{p.arete}</Arete></TD>
                           <TD>{p.fechaEstimada}</TD>
                           <TD className="text-right tabular-nums">{p.diasRestantes} d</TD>
                         </tr>
@@ -170,7 +171,7 @@ export default async function Dashboard() {
                       )}
                       {a.peso.top.map((r) => (
                         <tr key={r.arete}>
-                          <TD><Arete>{r.arete}</Arete></TD>
+                          <TD><Arete href={fichaUrl(r.arete)}>{r.arete}</Arete></TD>
                           <TD className="text-right tabular-nums">{r.pesoActual} kg</TD>
                           <TD className="text-right tabular-nums font-medium text-campo-700">
                             {dash(r.gdp, ' g/d')}
@@ -214,7 +215,7 @@ export default async function Dashboard() {
                       )}
                       {a.sanidad.recientes.map((e, i) => (
                         <tr key={`${e.arete}-${e.fecha}-${i}`}>
-                          <TD><Arete>{e.arete}</Arete></TD>
+                          <TD><Arete href={fichaUrl(e.arete)}>{e.arete}</Arete></TD>
                           <TD className="whitespace-nowrap">{TIPO_SANIDAD[e.tipo] || e.tipo}</TD>
                           <TD>{e.producto || e.diagnostico || '—'}</TD>
                           <TD className="whitespace-nowrap tabular-nums">{e.fecha}</TD>
@@ -253,7 +254,7 @@ export default async function Dashboard() {
                       )}
                       {a.mortalidad.recientes.map((m, i) => (
                         <tr key={`${m.arete}-${m.fecha}-${i}`}>
-                          <TD><Arete>{m.arete}</Arete></TD>
+                          <TD><Arete href={fichaUrl(m.arete)}>{m.arete}</Arete></TD>
                           <TD title={m.causa}>{m.causa}</TD>
                           <TD className="whitespace-nowrap tabular-nums">{m.fecha}</TD>
                         </tr>
@@ -268,17 +269,30 @@ export default async function Dashboard() {
             <Section id="leche" title="Producción de leche" icon="🥛" subtitle="últimos 30 días">
               {a.leche.hayDatos ? (
                 <KpiRow>
-                  <Kpi label="Litros totales" value={a.leche.totalLitros30d} tono="info" />
-                  <Kpi label="Litros / día" value={dash(a.leche.promLitrosDia)} />
+                  {/* No es la producción del mes: produccion_leche se llena hoy con
+                      controles lecheros — el hato completo, un día cada 2 o 3 semanas —
+                      así que el total suma solo esos días. */}
+                  <Kpi
+                    label="Litros medidos"
+                    value={a.leche.totalLitros30d}
+                    tono="info"
+                    hint="suma de los días de control, no del mes"
+                  />
+                  <Kpi label="Litros / día de control" value={dash(a.leche.promLitrosDia)} />
                   <Kpi label="Vacas en ordeño" value={a.leche.vacasEnOrdeno} />
-                  <Kpi label="Litros / vaca / día" value={dash(a.leche.promPorVacaDia)} tono="campo" />
+                  <Kpi
+                    label="Litros / vaca / día"
+                    value={dash(a.leche.promPorVacaDia)}
+                    tono="campo"
+                    hint="promedio en los días medidos"
+                  />
                 </KpiRow>
               ) : (
                 <Card>
                   <p className="text-sm text-tierra-500">
-                    Aún no se registra producción de leche. La medición automática por hardware
-                    (ESP32) todavía no está conectada; cuando lo esté, estos indicadores se llenan
-                    solos.
+                    Aún no se registra producción de leche. Se llenará con el control lechero —
+                    el pesaje de todo el hato cada 2 o 3 semanas — y, cuando esté conectada,
+                    con la medición automática por hardware (ESP32).
                   </p>
                 </Card>
               )}
@@ -310,7 +324,7 @@ export default async function Dashboard() {
                   )}
                   {proximas?.map((p, i) => (
                     <tr key={`${p.arete}-${p.proxima_fecha}-${i}`}>
-                      <TD><Arete>{p.arete}</Arete></TD>
+                      <TD><Arete href={fichaUrl(p.arete)}>{p.arete}</Arete></TD>
                       <TD className="whitespace-nowrap">{TIPO_SANIDAD[p.tipo] || p.tipo}</TD>
                       <TD>{p.producto || '—'}</TD>
                       <TD className="whitespace-nowrap tabular-nums">{p.proxima_fecha}</TD>
@@ -337,7 +351,7 @@ export default async function Dashboard() {
                   )}
                   {retiros?.map((r, i) => (
                     <tr key={`${r.arete}-${r.hasta}-${i}`}>
-                      <TD><Arete>{r.arete}</Arete></TD>
+                      <TD><Arete href={fichaUrl(r.arete)}>{r.arete}</Arete></TD>
                       <TD>{r.producto || '—'}</TD>
                       <TD className="whitespace-nowrap tabular-nums">{r.hasta}</TD>
                       <TD><Badge tono="info">{enDias(r.dias)}</Badge></TD>
@@ -363,7 +377,7 @@ export default async function Dashboard() {
                   )}
                   {rechequeos?.map((r, i) => (
                     <tr key={`${r.arete}-${r.fecha}-${i}`}>
-                      <TD><Arete>{r.arete}</Arete></TD>
+                      <TD><Arete href={fichaUrl(r.arete)}>{r.arete}</Arete></TD>
                       <TD className="whitespace-nowrap tabular-nums">{r.fecha}</TD>
                       <TD><Badge tono="aviso">{r.dias === 0 ? 'hoy' : haceDias(-r.dias)}</Badge></TD>
                       <TD>{r.observaciones || '—'}</TD>
@@ -382,11 +396,13 @@ export default async function Dashboard() {
               {prenez && prenez.length > 0 && (
                 <ul className="flex flex-wrap gap-2">
                   {prenez.map((arete) => (
-                    <li
-                      key={arete}
-                      className="rounded-lg border border-tierra-200 bg-tierra-50 px-2.5 py-1 text-sm font-semibold tabular-nums text-tierra-800"
-                    >
-                      {arete}
+                    <li key={arete}>
+                      <a
+                        href={fichaUrl(arete)}
+                        className="block rounded-lg border border-tierra-200 bg-tierra-50 px-2.5 py-1 text-sm font-semibold tabular-nums text-tierra-800 hover:border-campo-300 hover:bg-campo-50 hover:text-campo-800"
+                      >
+                        {arete}
+                      </a>
                     </li>
                   ))}
                 </ul>

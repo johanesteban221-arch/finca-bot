@@ -1,6 +1,10 @@
 // Shell del tablero: barra lateral fija en escritorio, navegación horizontal
 // desplazable en móvil. Sin estado ni JS de cliente — la navegación son anclas
-// a las secciones de la página, así que todo sigue siendo server component.
+// a las secciones del tablero, así que todo sigue siendo server component.
+//
+// Las anclas van con ruta absoluta (`/dashboard#...`) y no sueltas: este layout
+// también envuelve la hoja de vida del animal, donde un `#inventario` a secas
+// no llevaría a ninguna parte.
 //
 // En Fase 3, cuando existan las rutas de /dashboard/registrar/*, estas anclas
 // se vuelven enlaces reales y aquí entra el guardia de sesión (Fase 2).
@@ -11,13 +15,13 @@ import {
 } from 'lucide-react';
 
 const SECCIONES = [
-  { href: '#inventario', label: 'Inventario', Icon: LayoutDashboard },
-  { href: '#reproductivo', label: 'Reproductivo', Icon: Baby },
-  { href: '#peso', label: 'Peso y ganancia', Icon: Scale },
-  { href: '#sanidad', label: 'Sanidad', Icon: Stethoscope },
-  { href: '#mortalidad', label: 'Mortalidad', Icon: Skull },
-  { href: '#leche', label: 'Leche', Icon: Milk },
-  { href: '#alertas', label: 'Alertas', Icon: TriangleAlert },
+  { href: '/dashboard#inventario', label: 'Inventario', Icon: LayoutDashboard },
+  { href: '/dashboard#reproductivo', label: 'Reproductivo', Icon: Baby },
+  { href: '/dashboard#peso', label: 'Peso y ganancia', Icon: Scale },
+  { href: '/dashboard#sanidad', label: 'Sanidad', Icon: Stethoscope },
+  { href: '/dashboard#mortalidad', label: 'Mortalidad', Icon: Skull },
+  { href: '/dashboard#leche', label: 'Leche', Icon: Milk },
+  { href: '/dashboard#alertas', label: 'Alertas', Icon: TriangleAlert },
 ];
 
 function Marca() {
@@ -56,9 +60,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <p className="mt-4 border-t border-campo-800 pt-3 text-xs leading-relaxed text-campo-300/80">
-          Los registros entran por WhatsApp.
+          Toque cualquier arete para abrir la hoja de vida del animal.
           <br />
-          Formularios web: próximamente.
+          Los registros entran por WhatsApp. Formularios web: próximamente.
         </p>
       </aside>
 
