@@ -422,17 +422,25 @@ forms built before auth would need authorization retrofitted into nine write pat
       `db/diagnostics/fechas_desfasadas_utc.sql`, which must be updated in the same phase;
       and there is still no `created_by` column to record who wrote what.
 
-### Hoja de vida del animal — Bloque A ✅, B / C / D pendientes
+### Hoja de vida del animal — Bloque A ✅ y B ✅, C / D pendientes
 Expansion agreed 2026-08-11: full animal record, veterinary reproductive check-ups,
 synchronization protocols, dry-off, manual milk control, unified timeline, family tree.
 
 - [x] ~~**Bloque A — schema + domain + tests**~~ — `db/03_hoja_de_vida.sql`, `domain/`
       (chequeos · protocolos · leche · `registrarSecado` · `aplicarProducto`), rechequeo
-      alert, 184 tests. ⚠️ The SQL is written but **not applied** in Supabase.
-- [ ] **Bloque B — animal record, read-only** — `/dashboard/animales/[arete]`: unified
-      timeline off `vw_historial_animal` and family tree off `vw_genealogia`. No writes, so
-      it ships safely behind the current Basic Auth. Also: relabel `totalLitros30d`, which
-      now means "sum of the control days", not monthly production.
+      alert, 184 tests. ✅ **The SQL is applied in Supabase** (2026-08-15), so the new
+      tables and the final `vw_historial_animal` / `vw_genealogia` / `vw_respaldo_completo`
+      are live.
+- [x] ~~**Bloque B — animal record, read-only**~~ — `/dashboard/animales/[arete]`, 200 tests.
+      `src/lib/ficha.ts` reads `vw_historial_animal` (200 events max, newest first) and
+      `vw_genealogia`, plus the offspring — one query keyed on the animal's sex, `madre_id`
+      for a cow and `padre_id` for a bull. The page degrades per section with
+      `allSettled`, and **a failed query never renders as "animal no encontrado"**: that
+      message sends someone to re-register an animal that is already in the database.
+      Every arete in the dashboard links to the ficha, so the sidebar anchors became
+      absolute (`/dashboard#…`) — the layout wraps the ficha too. `totalLitros30d` is now
+      labelled "Litros medidos" with the hint that it sums the control days, not the month;
+      the field name stayed, only the label changed.
 - [ ] **Bloque C — dry-off flow in the bot** — `registrarSecado` is done; it needs the
       WhatsApp state machine (`flows/reproduccion.ts` + `handler.ts` + `menu.ts`). Dry-off
       happens in the potrero, not at a desk.
@@ -511,7 +519,7 @@ Deferred from the earlier dashboard review:
 ---
 
 ## Tests
-`npm test` (Vitest, run mode) · `npm run test:watch`. 184 tests. Test-only dependency — the
+`npm test` (Vitest, run mode) · `npm run test:watch`. 200 tests. Test-only dependency — the
 Docker production build is untouched.
 
 - `tests/helpers/fake-supabase.ts` — in-memory Supabase covering the query surface the app
@@ -524,6 +532,9 @@ Docker production build is untouched.
   and session persistence are covered too. Add new flows here as they land.
 - `tests/lib/dashboard.test.ts` renders the server component to static HTML — that is what
   verifies the dashboard actually degrades instead of showing zeros.
+- `tests/lib/ficha.test.ts` does the same for `/dashboard/animales/[arete]`, seeding
+  `vw_historial_animal` and `vw_genealogia` as plain tables in the fake. Its load-bearing
+  case is the one separating "animal no encontrado" from "no se pudo consultar".
 - Both flow suites assert `finca_id` on every written row — keep that guard.
   `tests/lib/hoja-de-vida.test.ts` carries the same guard for the newer domain modules.
 - `tests/lib/hoja-de-vida.test.ts` also pins the two cross-cutting rules that are easy to
@@ -551,9 +562,9 @@ query into a convincing empty result. Every read goes through `unwrapList()` in
 
 ---
 
-*Last updated: hoja de vida Bloque A done (db/03_hoja_de_vida.sql + domain chequeos /
-protocolos / leche / secado + rechequeo alert, 184 tests). SQL written, NOT yet applied in
-Supabase. Next: Bloque B (animal record, read-only) → Bloque C (dry-off bot flow) → Fase 2
-(auth by role + user management) → Bloque D (forms).*
+*Last updated 2026-08-15: hoja de vida Bloque A + B done. `db/03_hoja_de_vida.sql` is
+APPLIED in Supabase, and `/dashboard/animales/[arete]` renders the unified timeline and the
+family tree read-only (`src/lib/ficha.ts`, 200 tests). Next: Bloque C (dry-off bot flow) →
+Fase 2 (auth by role + user management) → Bloque D (forms).*
 *Sections marked 🎯 are decided design, not implemented — verify against code before relying on them.*
 *Full project brief: `docs/README-ganaderia.md` (⚠️ outdated — describes n8n as primary).*
