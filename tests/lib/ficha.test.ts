@@ -15,9 +15,15 @@ vi.mock('../../src/lib/supabase', async () => {
   return { ...actual, supabase: { from: (name: string) => dbRef.current.from(name) } };
 });
 
+vi.mock('../../src/lib/auth/server', async () => {
+  const { sesionRef } = await import('../helpers/auth');
+  return { getSesion: async () => sesionRef.current };
+});
+
 import Ficha from '../../src/app/dashboard/animales/[arete]/page';
 import { edadTexto } from '../../src/lib/ficha';
 import { resetDb } from '../helpers/db';
+import { sinSesion, resetSesion } from '../helpers/auth';
 import type { FakeSupabase } from '../helpers/fake-supabase';
 import { NOW } from '../helpers/harness';
 
@@ -26,18 +32,18 @@ let db: FakeSupabase;
 const seed = () => ({
   animales: [
     {
-      id: 'a1', finca_id: 'f1', arete: '045', nombre: 'Lucera', sexo: 'H', raza: 'Gyr x Holstein',
+      id: 'a1', arete: '045', nombre: 'Lucera', sexo: 'H', raza: 'Gyr x Holstein',
       categoria: 'vaca', estado: 'activo', estado_reproductivo: 'prenada',
       registro_oficial: 'ICA-9912', fecha_nacimiento: '2023-02-10', origen: 'nacido_en_finca',
       peso_nacimiento: 34, notas: 'Vaca insignia del hato', madre_id: 'a3', padre_id: null,
     },
     // Cría: cuelga de a1 por madre_id, que es lo que sigue getCrias.
     {
-      id: 'a2', finca_id: 'f1', arete: '210', nombre: null, sexo: 'M', categoria: 'ternero',
+      id: 'a2', arete: '210', nombre: null, sexo: 'M', categoria: 'ternero',
       estado: 'activo', fecha_nacimiento: '2026-03-01', madre_id: 'a1', padre_id: null,
     },
     {
-      id: 'a3', finca_id: 'f1', arete: '101', sexo: 'H', categoria: 'vaca', estado: 'activo',
+      id: 'a3', arete: '101', sexo: 'H', categoria: 'vaca', estado: 'activo',
       fecha_nacimiento: '2019-05-20', madre_id: null, padre_id: null,
     },
   ],
@@ -223,5 +229,20 @@ describe('edadTexto', () => {
   it('no inventa una edad sin fecha de nacimiento ni con una fecha futura', () => {
     expect(edadTexto(null)).toBeNull();
     expect(edadTexto('2027-01-01')).toBeNull();
+  });
+});
+
+// =====================================================================
+describe('guardia de sesión (Fase 2)', () => {
+  afterEach(() => resetSesion());
+
+  it('sin sesión no muestra la hoja de vida del animal', async () => {
+    sinSesion('anonimo');
+
+    const html = await render();
+
+    expect(html).toContain('Sesión no iniciada');
+    expect(html).not.toContain('Lucera');
+    expect(html).not.toContain('Historial unificado');
   });
 });

@@ -1,8 +1,9 @@
 // Read layer for the animal record (hoja de vida) rendered at
 // /dashboard/animales/[arete]: unified timeline + family tree + offspring.
 //
-// Read-only on purpose. Bloque B ships before the role-based auth of Fase 2, so
-// it is safe behind today's Basic Auth precisely because nothing here writes.
+// Read-only on purpose: la ficha no escribe nada. Desde Fase 2 la página que la
+// usa exige sesión y el permiso `animal.ver`, y estas consultas filtran por
+// finca_id explícitamente — RLS sigue dormida bajo service_role.
 //
 // Every query reports its failure loudly instead of the `data || []` idiom: on
 // this page an unreachable database would otherwise render as "animal sin
@@ -10,6 +11,7 @@
 // recorded anything for. The page decides how to degrade, section by section.
 
 import { supabase, unwrapList } from './supabase';
+import { FINCA_ID } from './tenant';
 import { CAMPOS_FICHA } from './animals';
 import { daysBetween, today } from './dates';
 
@@ -78,6 +80,7 @@ export async function getAnimalPorArete(arete: string): Promise<AnimalFicha | nu
   const { data, error } = await supabase
     .from('animales')
     .select(CAMPOS_FICHA)
+    .eq('finca_id', FINCA_ID)
     .eq('arete', arete)
     .maybeSingle();
   if (error) throw new Error(`consulta a animales (ficha ${arete}): ${error.message}`);
@@ -94,6 +97,7 @@ export async function getHistorial(
   const res = await supabase
     .from('vw_historial_animal')
     .select('fecha, categoria, evento, descripcion, created_at, ref_id')
+    .eq('finca_id', FINCA_ID)
     .eq('animal_id', animalId)
     .order('fecha', { ascending: false })
     .order('created_at', { ascending: false })
@@ -123,6 +127,7 @@ export async function getGenealogia(animalId: string): Promise<Genealogia | null
       'abuelo_materno, abuelo_materno_id, abuelo_materno_en_sistema, ' +
       'abuela_materna, abuela_materna_id, abuela_materna_en_sistema',
     )
+    .eq('finca_id', FINCA_ID)
     .eq('animal_id', animalId)
     .maybeSingle();
   if (error) throw new Error(`consulta a vw_genealogia: ${error.message}`);
@@ -149,6 +154,7 @@ export async function getCrias(animal: Pick<AnimalFicha, 'id' | 'sexo'>): Promis
   const res = await supabase
     .from('animales')
     .select('id, arete, nombre, sexo, fecha_nacimiento, estado')
+    .eq('finca_id', FINCA_ID)
     .eq(columna, animal.id)
     .order('fecha_nacimiento', { ascending: false })
     .limit(100);

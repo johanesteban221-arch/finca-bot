@@ -1,4 +1,5 @@
 import { supabase, unwrapList } from './supabase';
+import { FINCA_ID } from './tenant';
 import { today, addDays, shiftDate, daysBetween } from './dates';
 
 // Zootechnical analytics for the meeting dashboard: productive (weight/milk) and
@@ -72,13 +73,15 @@ export type Analytics = {
 };
 
 export async function getAnalytics(): Promise<Analytics> {
+  // Todas filtran por finca_id explícitamente. RLS está dormida bajo service_role,
+  // así que este .eq() ES el aislamiento entre fincas — no un respaldo de otro.
   const [aRes, pRes, rRes, lRes, sRes, mRes] = await Promise.all([
-    supabase.from('animales').select('id, arete, sexo, categoria, estado, estado_reproductivo'),
-    supabase.from('pesajes').select('animal_id, fecha, peso_kg, tipo').order('fecha', { ascending: true }),
-    supabase.from('eventos_reproductivos').select('animal_id, tipo, fecha, resultado').order('fecha', { ascending: true }),
-    supabase.from('produccion_leche').select('animal_id, fecha, litros').gte('fecha', addDays(-30)),
-    supabase.from('eventos_sanitarios').select('animal_id, tipo, fecha, producto, diagnostico').gte('fecha', addDays(-SANIDAD_DIAS)),
-    supabase.from('movimientos').select('animal_id, fecha, notas').eq('tipo', 'muerte'),
+    supabase.from('animales').select('id, arete, sexo, categoria, estado, estado_reproductivo').eq('finca_id', FINCA_ID),
+    supabase.from('pesajes').select('animal_id, fecha, peso_kg, tipo').eq('finca_id', FINCA_ID).order('fecha', { ascending: true }),
+    supabase.from('eventos_reproductivos').select('animal_id, tipo, fecha, resultado').eq('finca_id', FINCA_ID).order('fecha', { ascending: true }),
+    supabase.from('produccion_leche').select('animal_id, fecha, litros').eq('finca_id', FINCA_ID).gte('fecha', addDays(-30)),
+    supabase.from('eventos_sanitarios').select('animal_id, tipo, fecha, producto, diagnostico').eq('finca_id', FINCA_ID).gte('fecha', addDays(-SANIDAD_DIAS)),
+    supabase.from('movimientos').select('animal_id, fecha, notas').eq('finca_id', FINCA_ID).eq('tipo', 'muerte'),
   ]);
   // A failed query must not read as "no hay datos" — see unwrapList.
   const animales = unwrapList<any>(aRes, 'animales');

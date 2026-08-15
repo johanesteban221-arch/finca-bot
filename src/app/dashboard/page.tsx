@@ -3,6 +3,9 @@ import {
   getProximas, getRetiros, getPrenezPendientes, getRechequeosPendientes, PRENEZ_DIAS,
 } from '@/lib/alerts';
 import { fichaUrl } from '@/lib/ficha';
+import { getSesion } from '@/lib/auth/server';
+import { puede } from '@/lib/auth/roles';
+import { PantallaAcceso, SinPermiso } from '@/components/acceso';
 import {
   Section, Card, Kpi, KpiRow, Badge, Table, TH, TD, Arete, EmptyRow, Bars, Banner,
 } from '@/components/ui';
@@ -28,6 +31,15 @@ const enDias = (d: number) => (d === 0 ? 'hoy' : d === 1 ? 'mañana' : `en ${d} 
 const haceDias = (d: number) => (d === -1 ? 'ayer' : `hace ${Math.abs(d)} días`);
 
 export default async function Dashboard() {
+  // El guardia va en la página, no en el layout: en el App Router los dos se
+  // renderizan en paralelo, así que un guardia solo en el layout no impediría
+  // que estas consultas salgan.
+  const sesion = await getSesion();
+  if (sesion.estado !== 'ok') return <PantallaAcceso sesion={sesion} />;
+  if (!puede(sesion.usuario.rol, 'tablero.ver')) {
+    return <SinPermiso rol={sesion.usuario.rol} que="ver el tablero de la finca" />;
+  }
+
   // allSettled, no all: una consulta caída degrada su propia sección en vez de
   // dejar el tablero en blanco.
   const [aRes, proxRes, retRes, prenezRes, recheRes] = await Promise.allSettled([

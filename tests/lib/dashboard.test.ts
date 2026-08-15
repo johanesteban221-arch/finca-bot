@@ -14,8 +14,14 @@ vi.mock('../../src/lib/supabase', async () => {
   return { ...actual, supabase: { from: (name: string) => dbRef.current.from(name) } };
 });
 
+vi.mock('../../src/lib/auth/server', async () => {
+  const { sesionRef } = await import('../helpers/auth');
+  return { getSesion: async () => sesionRef.current };
+});
+
 import Dashboard from '../../src/app/dashboard/page';
 import { resetDb } from '../helpers/db';
+import { sinSesion, resetSesion } from '../helpers/auth';
 import type { FakeSupabase } from '../helpers/fake-supabase';
 import { NOW } from '../helpers/harness';
 
@@ -145,5 +151,33 @@ describe('degradation on a failed query', () => {
     expect(html).toContain('No se pudo cargar');
     // Counts must not read as zero when the query failed.
     expect(html).toContain('—');
+  });
+});
+
+// =====================================================================
+describe('guardia de sesión (Fase 2)', () => {
+  afterEach(() => resetSesion());
+
+  it('sin sesión no pinta el tablero ni sus consultas', async () => {
+    sinSesion('anonimo');
+
+    const html = await render();
+
+    expect(html).toContain('Sesión no iniciada');
+    // Las secciones del hato no se renderizan: el guardia está en la página, no
+    // en el layout, justamente porque el layout no llegaría a tiempo.
+    expect(html).not.toContain('Inventario del hato');
+    expect(html).not.toContain('Alertas activas');
+  });
+
+  it('cada motivo de rechazo dice cómo se arregla', async () => {
+    sinSesion('inactivo');
+    expect(await render()).toContain('Acceso desactivado');
+
+    sinSesion('sin_acceso');
+    expect(await render()).toContain('Sin acceso a esta finca');
+
+    sinSesion('sin_perfil');
+    expect(await render()).toContain('Cuenta sin perfil');
   });
 });

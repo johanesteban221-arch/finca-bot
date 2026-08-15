@@ -1,6 +1,9 @@
 import { supabase, unwrapList } from './supabase';
+import { FINCA_ID } from './tenant';
 
 // Shared alert queries used by both the daily-alerts cron and the web dashboard.
+// Cada una filtra por finca_id: RLS está dormida bajo service_role, así que ese
+// .eq() es el aislamiento entre fincas, no un cinturón de más.
 // These throw on a failed query rather than returning an empty list: "no hay
 // alertas" and "no pude consultar las alertas" must never look the same, because
 // the first one is what the owner acts on at 6 AM.
@@ -48,6 +51,7 @@ export async function getProximas(): Promise<Proxima[]> {
   const res = await supabase
     .from('eventos_sanitarios')
     .select('tipo, producto, proxima_fecha, animales(arete)')
+    .eq('finca_id', FINCA_ID)
     .not('proxima_fecha', 'is', null)
     .lte('proxima_fecha', shift(7))
     .gte('proxima_fecha', shift(-60))
@@ -69,6 +73,7 @@ export async function getRetiros(): Promise<Retiro[]> {
   const res = await supabase
     .from('eventos_sanitarios')
     .select('producto, retiro_leche_hasta, animales(arete)')
+    .eq('finca_id', FINCA_ID)
     .gte('retiro_leche_hasta', hoy)
     .order('retiro_leche_hasta', { ascending: true })
     .limit(50);
@@ -100,6 +105,7 @@ export async function getRechequeosPendientes(): Promise<Rechequeo[]> {
   const res = await supabase
     .from('chequeos_reproductivos')
     .select('fecha, estado_codigo, veterinario, observaciones, created_at, animales!inner(arete, estado)')
+    .eq('finca_id', FINCA_ID)
     .eq('animales.estado', 'activo')
     .gte('fecha', shift(-RECHEQUEO_VENTANA_DIAS))
     // created_at breaks ties when a cow was checked twice on the same day.
@@ -132,6 +138,7 @@ export async function getPrenezPendientes(): Promise<string[]> {
   const res = await supabase
     .from('eventos_reproductivos')
     .select('fecha, animales!inner(arete, estado_reproductivo)')
+    .eq('finca_id', FINCA_ID)
     .eq('tipo', 'servicio')
     .lte('fecha', shift(-PRENEZ_DIAS))
     .eq('animales.estado_reproductivo', 'servida')

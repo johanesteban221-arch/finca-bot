@@ -3,16 +3,21 @@
 // a las secciones del tablero, así que todo sigue siendo server component.
 //
 // Las anclas van con ruta absoluta (`/dashboard#...`) y no sueltas: este layout
-// también envuelve la hoja de vida del animal, donde un `#inventario` a secas
-// no llevaría a ninguna parte.
+// también envuelve la hoja de vida del animal y la gestión de usuarios, donde un
+// `#inventario` a secas no llevaría a ninguna parte.
 //
-// En Fase 3, cuando existan las rutas de /dashboard/registrar/*, estas anclas
-// se vuelven enlaces reales y aquí entra el guardia de sesión (Fase 2).
+// ⚠️ Lo que se muestra aquí NO es la autorización. Esconder el enlace de
+// Usuarios es cortesía; el guardia real está en cada página y en cada server
+// action. En el App Router el layout y la página se renderizan en paralelo, así
+// que un guardia puesto aquí no llegaría a tiempo de frenar nada.
 
 import type { ReactNode } from 'react';
 import {
-  LayoutDashboard, Baby, Scale, Stethoscope, Skull, Milk, TriangleAlert,
+  LayoutDashboard, Baby, Scale, Stethoscope, Skull, Milk, TriangleAlert, Users,
 } from 'lucide-react';
+import { getSesion } from '@/lib/auth/server';
+import { puede, ROL_LABEL } from '@/lib/auth/roles';
+import { cerrarSesion } from '@/app/login/actions';
 
 const SECCIONES = [
   { href: '/dashboard#inventario', label: 'Inventario', Icon: LayoutDashboard },
@@ -23,6 +28,8 @@ const SECCIONES = [
   { href: '/dashboard#leche', label: 'Leche', Icon: Milk },
   { href: '/dashboard#alertas', label: 'Alertas', Icon: TriangleAlert },
 ];
+
+const USUARIOS = { href: '/dashboard/usuarios', label: 'Usuarios', Icon: Users };
 
 function Marca() {
   return (
@@ -41,14 +48,31 @@ function Marca() {
   );
 }
 
-export default function DashboardLayout({ children }: { children: ReactNode }) {
+const Salir = ({ className = '' }: { className?: string }) => (
+  <form action={cerrarSesion}>
+    <button
+      type="submit"
+      className={`rounded-lg px-2.5 py-1 text-xs font-medium text-campo-100 hover:bg-campo-800 hover:text-white ${className}`}
+    >
+      Salir
+    </button>
+  </form>
+);
+
+export default async function DashboardLayout({ children }: { children: ReactNode }) {
+  const sesion = await getSesion();
+  const usuario = sesion.estado === 'ok' ? sesion.usuario : null;
+  const enlaces = usuario && puede(usuario.rol, 'usuario.administrar')
+    ? [...SECCIONES, USUARIOS]
+    : SECCIONES;
+
   return (
     <div className="min-h-screen lg:flex">
       {/* Barra lateral — escritorio */}
       <aside className="sticky top-0 z-20 hidden h-screen w-64 shrink-0 flex-col border-r border-campo-950/40 bg-campo-900 p-4 lg:flex">
         <Marca />
         <nav className="mt-6 flex-1 space-y-0.5">
-          {SECCIONES.map(({ href, label, Icon }) => (
+          {enlaces.map(({ href, label, Icon }) => (
             <a
               key={href}
               href={href}
@@ -59,20 +83,41 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             </a>
           ))}
         </nav>
-        <p className="mt-4 border-t border-campo-800 pt-3 text-xs leading-relaxed text-campo-300/80">
-          Toque cualquier arete para abrir la hoja de vida del animal.
-          <br />
-          Los registros entran por WhatsApp. Formularios web: próximamente.
-        </p>
+
+        {usuario ? (
+          <div className="mt-4 border-t border-campo-800 pt-3">
+            <p className="truncate text-sm font-medium text-white">{usuario.nombre}</p>
+            <p className="truncate text-xs text-campo-300">
+              {ROL_LABEL[usuario.rol]}
+              {usuario.legado && ' · acceso de arranque'}
+            </p>
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <span className="text-xs text-campo-300/70">Registros por WhatsApp</span>
+              <Salir />
+            </div>
+          </div>
+        ) : (
+          <p className="mt-4 border-t border-campo-800 pt-3 text-xs leading-relaxed text-campo-300/80">
+            Toque cualquier arete para abrir la hoja de vida del animal.
+            <br />
+            Los registros entran por WhatsApp.
+          </p>
+        )}
       </aside>
 
       {/* Encabezado + navegación — móvil */}
       <div className="sticky top-0 z-20 bg-campo-900 lg:hidden">
-        <div className="px-4 py-3">
+        <div className="flex items-center justify-between gap-2 px-4 py-3">
           <Marca />
+          {usuario && (
+            <div className="flex items-center gap-2">
+              <span className="truncate text-xs text-campo-200">{ROL_LABEL[usuario.rol]}</span>
+              <Salir className="border border-campo-700" />
+            </div>
+          )}
         </div>
         <nav className="flex gap-1 overflow-x-auto px-3 pb-2">
-          {SECCIONES.map(({ href, label, Icon }) => (
+          {enlaces.map(({ href, label, Icon }) => (
             <a
               key={href}
               href={href}

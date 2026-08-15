@@ -18,9 +18,14 @@ Pega estas en la pestaña **Environment** de la app (valores reales, NO los plac
 ```
 SUPABASE_URL=...
 SUPABASE_SERVICE_ROLE_KEY=...
+SUPABASE_ANON_KEY=...          # clave anon/publishable — solo para el login del tablero
 WHATSAPP_PHONE_NUMBER_ID=...
 WHATSAPP_TOKEN=...
 WHATSAPP_VERIFY_TOKEN=...
+CRON_SECRET=...
+AUTH_LEGACY_BASIC=1            # puerta de arranque, ver §8
+DASHBOARD_USER=...
+DASHBOARD_PASSWORD=...
 ```
 
 ## 4. Puerto y dominio
@@ -40,3 +45,21 @@ En la app de Meta (Ganaderia) → WhatsApp → Configuración → **Webhooks**:
 
 ## 7. Actualizaciones
 `git push` a `main` → Easypanel redepliega (si activaste auto-deploy) o pulsa **Deploy**.
+
+## 8. Primer ingreso al tablero con usuarios y roles (Fase 2)
+El tablero entra con correo y contraseña (Supabase Auth). El primer dueño no
+puede crearse a sí mismo, así que hay una puerta de arranque. **En este orden:**
+
+1. Aplica `db/04_auth_roles.sql` en el SQL Editor de Supabase.
+2. Deja `AUTH_LEGACY_BASIC=1` y entra a `/dashboard` con el usuario y contraseña
+   de siempre. Esa sesión actúa como **dueño** y muestra un aviso amarillo.
+3. Ve a **Usuarios → Agregar usuario**, créate con rol **Dueño**. La pantalla
+   muestra una contraseña temporal **una sola vez**: cópiala.
+4. Abre `/login` en otro navegador (o ventana privada) y comprueba que entras
+   con ese correo y esa contraseña.
+5. Solo entonces borra `AUTH_LEGACY_BASIC` de Environment y redepliega.
+
+⚠️ Si borras `AUTH_LEGACY_BASIC` antes del paso 4 y el login nuevo falla, te
+quedas fuera de tu propia finca: habría que volver a ponerlo en Easypanel.
+Mientras la variable esté en `1`, el tablero sigue funcionando aunque
+`SUPABASE_ANON_KEY` falte o esté mal — el Basic Auth no depende de ella.

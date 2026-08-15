@@ -11,6 +11,9 @@ import {
   type Ancestro, type EventoHistorial,
 } from '@/lib/ficha';
 import { catTitle, sexoTitle } from '@/lib/animals';
+import { getSesion } from '@/lib/auth/server';
+import { puede } from '@/lib/auth/roles';
+import { PantallaAcceso, SinPermiso } from '@/components/acceso';
 import {
   Section, Card, Kpi, KpiRow, Badge, Table, TH, TD, EmptyRow, Banner, type Tono,
 } from '@/components/ui';
@@ -125,6 +128,14 @@ function Marco({ children }: { children: React.ReactNode }) {
 }
 
 export default async function FichaAnimal({ params }: { params: Promise<{ arete: string }> }) {
+  // Mismo guardia que el tablero, y por la misma razón: la página consulta por
+  // su cuenta, así que la autorización tiene que estar aquí.
+  const sesion = await getSesion();
+  if (sesion.estado !== 'ok') return <PantallaAcceso sesion={sesion} />;
+  if (!puede(sesion.usuario.rol, 'animal.ver')) {
+    return <SinPermiso rol={sesion.usuario.rol} que="ver la hoja de vida de un animal" />;
+  }
+
   const { arete: crudo } = await params;
   const arete = decodeURIComponent(crudo).trim();
 
