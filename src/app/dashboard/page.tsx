@@ -308,8 +308,8 @@ export default async function Dashboard() {
                 <Card>
                   <p className="text-sm text-tierra-500">
                     Aún no se registra producción de leche. Se llenará con el control lechero —
-                    el pesaje de todo el hato cada 2 o 3 semanas — y, cuando esté conectada,
-                    con la medición automática por hardware (ESP32).
+                    la medición diaria vaca por vaca con medidor, en los dos ordeños — y,
+                    cuando esté conectada, con la medición automática por hardware (ESP32).
                   </p>
                 </Card>
               )}
