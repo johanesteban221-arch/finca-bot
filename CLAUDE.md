@@ -94,6 +94,10 @@ derived by summing. `analytics.ts` adds up `litros` across all rows without look
 - `src/lib/handler.ts` (~115 lines) — orchestrator: auth, global shortcuts, routing tables. No step logic.
 - `src/app/api/whatsapp/webhook/route.ts` — Meta webhook (GET verify + POST).
 - `src/app/api/cron/daily-alerts/route.ts`, `.../cron/backup/route.ts` — guarded by `CRON_SECRET`.
+- `src/app/api/version/route.ts` — public, four fields: which image is running. `construidoEn`
+  is stamped by the Docker build itself (no Easypanel config needed); `sha` needs
+  `--build-arg GIT_SHA` and reads `desconocido` without it. A stale `construidoEn` with a
+  fresh `arrancadoEn` means the container restarted, not that a deploy landed.
 - `src/middleware.ts` — guards `/dashboard`: Supabase session cookie → pass (the page
   verifies for real); else `AUTH_LEGACY_BASIC=1` → the old Basic Auth, still fail-closed
   (503 if the password is missing); else redirect to `/login`. Keep it that way.
@@ -110,6 +114,9 @@ src/lib/
   menu.ts               ← main menu (separate so flows can fall back without an import cycle)
   animals.ts            ← findAnimal / findOrCreateAnimal / CATEGORIAS
   dates.ts              ← farm-timezone calendar dates
+  hato.ts               ← listados de solo lectura para los formularios (Bloque D)
+  forms.ts              ← lectura de FormData: vacío ≠ 0, coma decimal, zod → mensaje
+  vocabulario.ts        ← etiquetas visibles de los códigos clínicos (P, VAS, CL2…)
   domain/               ← ⚠️ ALL writes live here — see the contract below
     schemas.ts          ← zod schemas mirroring the DB CHECK constraints
     animales · sanidad · reproduccion · pesajes · mortalidad
@@ -474,19 +481,36 @@ synchronization protocols, dry-off, manual milk control, unified timeline, famil
       optional (secado seco is a real case) and, when there is one, the domain routes it
       through `aplicarProducto()` → `eventos_sanitarios`. The success message shows the
       withdrawal date **and the expected calving date**, so `seca` is not read as `vacia`.
-- [ ] **Bloque D — dashboard forms** — chequeo, protocolo and milk control (mobile-first,
-      the whole herd on one screen). It waited for Fase 2 — these are the vet's forms, and
-      without roles the vet would log in with the owner's password — and **that block is now
-      lifted**: guard each action with `requerirPermiso('chequeo.registrar')`,
-      `'protocolo.registrar'` and `'leche.registrar'`, which is exactly how the matrix in
-      `auth/roles.ts` already splits them (the vet has the first two and not the third).
-      Also pending here: photo upload (Supabase Storage bucket + signed URLs) for the
+- [x] ~~**Bloque D — dashboard forms**~~ — the three screens are live, 270 tests:
+      `/dashboard/leche` (`leche.registrar`), `/dashboard/chequeos` (`chequeo.registrar`)
+      and `/dashboard/protocolos` (`protocolo.registrar`). Every action opens with
+      `requerirPermiso(...)`, which is exactly how `auth/roles.ts` splits them — the vaquero
+      gets the milk control and not the check-ups, the vet the reverse.
+
+      Decisions worth keeping:
+      - **Zero client JS.** All three are plain `<form action={serverAction}>`; the build
+        shows the new routes adding no chunk. A React-controlled form needs the bundle to
+        have loaded, and these screens are filled in the corral on a bad signal. The cost is
+        no live total while typing. The only two `'use client'` files are still the ones
+        that show a password, and for a different reason.
+      - **A blank box is not 0 litres.** They look the same on screen and mean the opposite
+        ("I did not milk her" vs "she gave nothing"). A cow with nothing typed is not
+        recorded; a `0` is. `lib/forms.ts` is where that distinction is enforced, and it is
+        the reason FormData parsing is not improvised per action.
+      - **The results travel in the URL** (`?ok=` / `?error=`), which is what keeps these
+        pages server components. Safe here because nothing sensitive goes through them.
+      - Reads for the forms live in `lib/hato.ts` (not `domain/`, which is the write
+        contract); the clinical labels live in `lib/vocabulario.ts` (not `domain/schemas.ts`,
+        which must not know how a label is spelled).
+
+      Still pending here: photo upload (Supabase Storage bucket + signed URLs) for the
       `foto_url` column, which exists but has no writer.
 
 Deferred from the earlier dashboard review:
 
 - [x] ~~**6. Filter dashboard queries by `finca_id`**~~ — done with Fase 2. Every read in
-      `analytics.ts`, `alerts.ts` and `ficha.ts` carries `.eq('finca_id', FINCA_ID)`. RLS is
+      `analytics.ts`, `alerts.ts`, `ficha.ts` and `hato.ts` carries `.eq('finca_id', FINCA_ID)`
+      (`domain/leche.ts`'s arete lookup was missing it and was fixed with Bloque D). RLS is
       still dormant under `service_role`, so that `.eq()` **is** the tenant isolation, not a
       second belt — any new read must carry it. The test seeds get the column stamped by
       `tests/helpers/db.ts`, mirroring the DB DEFAULT; seed a different `finca_id` on
@@ -558,7 +582,7 @@ Deferred from the earlier dashboard review:
 ---
 
 ## Tests
-`npm test` (Vitest, run mode) · `npm run test:watch`. 232 tests. Test-only dependency — the
+`npm test` (Vitest, run mode) · `npm run test:watch`. 270 tests. Test-only dependency — the
 Docker production build is untouched.
 
 - `tests/helpers/fake-supabase.ts` — in-memory Supabase covering the query surface the app
@@ -581,6 +605,11 @@ Docker production build is untouched.
 - `tests/lib/auth.test.ts` pins Fase 2: the whole permission matrix, the compensations of
   creating a user (there are no transactions — a failed profile must delete the Auth
   account), and the rule that the farm can never be left without an active `dueno`.
+- `tests/lib/formularios-{leche,chequeos,protocolos}.test.ts` pin Bloque D. They drive the
+  real server actions with a real `requerirPermiso` over a faked session, so the role matrix
+  is what is under test, not a double that says yes. `tests/helpers/formularios.ts` carries
+  the shared `redirect()` marker: the actions return nothing and report through the URL, so
+  catching that throw is the only way to read what came back.
 - Both flow suites assert `finca_id` on every written row — keep that guard.
   `tests/lib/hoja-de-vida.test.ts` carries the same guard for the newer domain modules.
 - `tests/lib/hoja-de-vida.test.ts` also pins the two cross-cutting rules that are easy to
@@ -608,11 +637,11 @@ query into a convincing empty result. Every read goes through `unwrapList()` in
 
 ---
 
-*Last updated 2026-08-15: hoja de vida A+B+C and dashboard Fase 2 done.
-`db/03_hoja_de_vida.sql` and `db/04_auth_roles.sql` are both APPLIED in Supabase. The
-dashboard logs in with email + password, authorises by role server-side, ships the user
-management module, and every read filters by `finca_id` (item #6 closed). The bot is
-unchanged — it still authorises by phone. 232 tests. Next: Bloque D (vet forms, now
-unblocked) → Fase 3 (the nine flows as forms) → `whatsapp_user_fincas`.*
+*Last updated 2026-08-24: Bloque D closed — the three capture forms (control lechero,
+chequeo reproductivo, protocolos) ship as server-rendered pages with zero client JS, each
+guarded per role. `AUTH_LEGACY_BASIC` is OFF: the dashboard now logs in only with email +
+password. `GET /api/version` reports the running image (sha + build timestamp), which is how
+"did my commit deploy?" gets answered. 270 tests. Next: the `foto_url` upload that Bloque D
+left open → Fase 3 (the nine flows as forms) → `whatsapp_user_fincas`.*
 *Sections marked 🎯 are decided design, not implemented — verify against code before relying on them.*
 *Full project brief: `docs/README-ganaderia.md` (⚠️ outdated — describes n8n as primary).*

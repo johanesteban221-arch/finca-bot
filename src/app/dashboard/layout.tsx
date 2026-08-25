@@ -13,7 +13,7 @@
 
 import type { ReactNode } from 'react';
 import {
-  LayoutDashboard, Baby, Scale, Stethoscope, Skull, Milk, TriangleAlert, Users,
+  LayoutDashboard, Baby, Scale, Stethoscope, Skull, Milk, TriangleAlert, Users, Syringe,
 } from 'lucide-react';
 import { getSesion } from '@/lib/auth/server';
 import { puede, ROL_LABEL, type Permiso } from '@/lib/auth/roles';
@@ -38,6 +38,7 @@ const SECCIONES = [
 const FORMULARIOS: { href: string; label: string; Icon: typeof Users; permiso: Permiso }[] = [
   { href: '/dashboard/leche', label: 'Control lechero', Icon: Milk, permiso: 'leche.registrar' },
   { href: '/dashboard/chequeos', label: 'Chequeo repro.', Icon: Stethoscope, permiso: 'chequeo.registrar' },
+  { href: '/dashboard/protocolos', label: 'Protocolos', Icon: Syringe, permiso: 'protocolo.registrar' },
 ];
 
 const USUARIOS = { href: '/dashboard/usuarios', label: 'Usuarios', Icon: Users };

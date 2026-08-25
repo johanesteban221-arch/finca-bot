@@ -119,6 +119,69 @@ export async function listarHembrasActivas(): Promise<VacaOrdeno[]> {
   }));
 }
 
+export type ProtocoloAbierto = {
+  id: string;
+  arete: string;
+  nombre: string | null;
+  nombreProtocolo: string;
+  estado: string;
+  fechaInicio: string;
+  fechaIa: string | null;
+  aplicaciones: number;
+};
+
+/**
+ * Protocolos que siguen corriendo, con su animal y cuántas aplicaciones llevan.
+ *
+ * Es lo que convierte la pantalla de protocolos en algo usable: un protocolo es
+ * un ciclo de días (0, 7, 9…), no un formulario de una sola vez, así que lo
+ * primero que el veterinario necesita ver es qué tiene abierto y en qué día va.
+ */
+export async function protocolosAbiertos(): Promise<ProtocoloAbierto[]> {
+  const res = await supabase
+    .from('protocolos_sincronizacion')
+    .select('id, animal_id, nombre_protocolo, estado, fecha_inicio, fecha_ia')
+    .eq('finca_id', FINCA_ID)
+    // 'en_curso' es el único estado abierto: registrar la IA NO cambia el estado,
+    // solo llena fecha_ia (ver registrarIaProtocolo). Lo cierra cerrarProtocolo
+    // ('finalizado') o cancelarProtocolo ('cancelado').
+    .eq('estado', 'en_curso')
+    .order('fecha_inicio', { ascending: false })
+    .limit(200);
+  const protocolos = unwrapList<any>(res, 'protocolos_sincronizacion');
+  if (!protocolos.length) return [];
+
+  const [animales, aplicaciones] = await Promise.all([
+    supabase
+      .from('animales')
+      .select('id, arete, nombre')
+      .eq('finca_id', FINCA_ID)
+      .in('id', protocolos.map((p) => p.animal_id))
+      .then((r) => unwrapList<any>(r, 'animales (protocolos)')),
+    supabase
+      .from('protocolo_aplicaciones')
+      .select('protocolo_id')
+      .eq('finca_id', FINCA_ID)
+      .in('protocolo_id', protocolos.map((p) => p.id))
+      .then((r) => unwrapList<any>(r, 'protocolo_aplicaciones')),
+  ]);
+
+  const animalPorId = new Map(animales.map((a) => [a.id, a]));
+  const conteo = new Map<string, number>();
+  for (const a of aplicaciones) conteo.set(a.protocolo_id, (conteo.get(a.protocolo_id) ?? 0) + 1);
+
+  return protocolos.map((p) => ({
+    id: p.id,
+    arete: animalPorId.get(p.animal_id)?.arete ?? '?',
+    nombre: animalPorId.get(p.animal_id)?.nombre ?? null,
+    nombreProtocolo: p.nombre_protocolo,
+    estado: p.estado,
+    fechaInicio: p.fecha_inicio,
+    fechaIa: p.fecha_ia ?? null,
+    aplicaciones: conteo.get(p.id) ?? 0,
+  }));
+}
+
 export type ChequeoReciente = {
   id: string;
   arete: string;
