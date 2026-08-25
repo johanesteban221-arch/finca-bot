@@ -40,6 +40,7 @@ export async function registrarControlLeche(input: S.ControlLecheInput): Promise
   const { data: encontrados, error: buscarError } = await supabase
     .from('animales')
     .select('id, arete')
+    .eq('finca_id', FINCA_ID)
     .in('arete', aretes);
   if (buscarError) throw new Error(`buscar animales del control: ${buscarError.message}`);
 

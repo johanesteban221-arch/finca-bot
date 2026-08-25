@@ -16,7 +16,7 @@ import {
   LayoutDashboard, Baby, Scale, Stethoscope, Skull, Milk, TriangleAlert, Users,
 } from 'lucide-react';
 import { getSesion } from '@/lib/auth/server';
-import { puede, ROL_LABEL } from '@/lib/auth/roles';
+import { puede, ROL_LABEL, type Permiso } from '@/lib/auth/roles';
 import { cerrarSesion } from '@/app/login/actions';
 
 const SECCIONES = [
@@ -27,6 +27,16 @@ const SECCIONES = [
   { href: '/dashboard#mortalidad', label: 'Mortalidad', Icon: Skull },
   { href: '/dashboard#leche', label: 'Leche', Icon: Milk },
   { href: '/dashboard#alertas', label: 'Alertas', Icon: TriangleAlert },
+];
+
+// Formularios de captura (Bloque D). Cada uno lleva el permiso que su acción
+// exige, así que el vaquero ve Control lechero y no Chequeo, y el veterinario al
+// revés — que es justo como los reparte la matriz de auth/roles.ts.
+//
+// ⚠️ Esto sigue siendo cortesía, no autorización: esconder el enlace no impide
+// un POST a mano. El guardia de verdad está en cada página y en cada acción.
+const FORMULARIOS: { href: string; label: string; Icon: typeof Users; permiso: Permiso }[] = [
+  { href: '/dashboard/leche', label: 'Control lechero', Icon: Milk, permiso: 'leche.registrar' },
 ];
 
 const USUARIOS = { href: '/dashboard/usuarios', label: 'Usuarios', Icon: Users };
@@ -62,9 +72,14 @@ const Salir = ({ className = '' }: { className?: string }) => (
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
   const sesion = await getSesion();
   const usuario = sesion.estado === 'ok' ? sesion.usuario : null;
-  const enlaces = usuario && puede(usuario.rol, 'usuario.administrar')
-    ? [...SECCIONES, USUARIOS]
-    : SECCIONES;
+  const formularios = usuario
+    ? FORMULARIOS.filter((f) => puede(usuario.rol, f.permiso))
+    : [];
+  const enlaces = [
+    ...SECCIONES,
+    ...formularios,
+    ...(usuario && puede(usuario.rol, 'usuario.administrar') ? [USUARIOS] : []),
+  ];
 
   return (
     <div className="min-h-screen lg:flex">
