@@ -276,38 +276,41 @@ export const cancelarProtocolo = z.object({
 // ---------------------------------------------------------------------
 // Control de leche manual  (db/03_hoja_de_vida.sql)
 // ---------------------------------------------------------------------
-// 0 is a legitimate reading (a cow that gave nothing that milking), so this is
-// min(0), not positive(). The upper bound is a typo guard — a dual-purpose cow
-// giving over 50 L in one ordeño does not exist.
+// 0 es una lectura VÁLIDA (la vaca no dio nada ese ordeño), así que min(0) y no
+// positive(). El tope es guarda-erratas: una vaca doble propósito que dé más de
+// 50 L en un solo ordeño no existe.
+//
+// Ya no es nullable: una medición que llega al dominio tiene litros. La casilla
+// en blanco —que significa "no la ordeñé", no "dio cero"— se descarta antes, en
+// la acción del formulario, y nunca se convierte en medición.
 const litros = z
   .number()
   .min(0, 'Los litros no pueden ser negativos.')
-  .max(50, 'Litros implausibles en un ordeño (máx. 50).')
-  .nullable()
-  .optional()
-  .transform((v) => v ?? null);
+  .max(50, 'Litros implausibles en un ordeño (máx. 50).');
 
-export const medicionLeche = z
-  .object({
-    arete,
-    litrosAm: litros,
-    litrosPm: litros,
-  })
-  .refine((m) => m.litrosAm !== null || m.litrosPm !== null, {
-    message: 'Cada vaca necesita al menos un ordeño registrado.',
-    path: ['litrosAm'],
-  });
+export const medicionLeche = z.object({
+  arete,
+  litros,
+});
 
 export const controlLeche = z
   .object({
     fecha,
+    // Un control es de UN ordeño. Antes era uno por día con columnas AM y PM, y
+    // eso hacía imposible registrar la tarde después de la mañana: el segundo
+    // guardado chocaba con la unicidad por (finca, fecha). Ver db/05.
+    ordeno: z.enum(['manana', 'tarde']),
+    // Identidad, no texto libre. La pone el servidor desde la sesión: `createdBy`
+    // es la FK autoritativa y `medidoPor` la copia del nombre, que sobrevive si
+    // algún día se borra la cuenta. Ninguno de los dos es editable en el formulario.
+    createdBy: z.uuid('Sesión inválida.').nullable().optional().transform((v) => v ?? null),
     medidoPor: opcional,
     notas: opcional,
     mediciones: z.array(medicionLeche).min(1, 'Registra al menos una vaca.'),
   })
-  // The form lists the whole herd on one screen, so a repeated arete means the
-  // same cow was filled twice. Caught here rather than by the unique index,
-  // which would only fail halfway through the batch.
+  // La pantalla lista el hato entero, así que un arete repetido significa que la
+  // misma vaca se llenó dos veces. Se corta aquí y no en el índice único, que
+  // fallaría a mitad del lote.
   .refine(
     (c) => new Set(c.mediciones.map((m) => m.arete)).size === c.mediciones.length,
     { message: 'Hay aretes repetidos en el control.', path: ['mediciones'] },

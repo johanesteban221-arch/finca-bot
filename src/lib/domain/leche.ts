@@ -1,16 +1,19 @@
-// Manual milk control: the whole milking herd weighed on one day, every two or
-// three weeks. Entry channel is a single dashboard screen listing the cows.
+// Control lechero manual: el hato en ordeño pesado en un ordeño concreto.
 //
-// The per-cow readings do NOT go into a table of their own. They land in
-// `produccion_leche`, which already has exactly the right shape (animal_id,
-// fecha, ordeno, litros). A parallel table would leave the dashboard's milk
-// section permanently empty (analytics.ts reads produccion_leche), split the
-// animal's timeline in two, and drop the control out of vw_respaldo_completo.
+// Un control es de UN ordeño, no de un día. Antes era uno por día con columnas
+// de mañana y tarde, y eso hacía imposible el uso real: la mañana se pesa a las
+// 5 y la tarde a las 3, y el segundo guardado chocaba con la unicidad por
+// (finca, fecha). Ver db/05_control_leche_ordeno.sql.
 //
-// ⚠️ The total is never stored. AM -> ordeno='manana', PM -> ordeno='tarde', and
-// the total is derived by summing. analytics.ts adds up `litros` across all rows
-// without looking at `ordeno`, so a third 'total' row would double the herd's
-// production.
+// El detalle por vaca NO va en una tabla propia. Aterriza en `produccion_leche`,
+// que ya tiene exactamente la forma necesaria (animal_id, fecha, ordeno, litros).
+// Una tabla paralela dejaría la sección de leche del tablero vacía para siempre
+// (analytics.ts lee produccion_leche), partiría la línea de tiempo del animal en
+// dos y dejaría el control fuera de vw_respaldo_completo.
+//
+// ⚠️ EL TOTAL NO SE GUARDA. Mañana → ordeno='manana', tarde → 'tarde', y el total
+// se deriva sumando. analytics.ts suma `litros` de TODAS las filas sin mirar
+// `ordeno`, así que una tercera fila 'total' duplicaría la producción del hato.
 
 import { supabase } from '../supabase';
 import { FINCA_ID } from '../tenant';
@@ -19,24 +22,40 @@ import * as S from './schemas';
 export type ControlLecheResult = {
   controlId: string;
   fecha: string;
-  /** Cows with at least one reading. */
+  ordeno: 'manana' | 'tarde';
+  /** Vacas registradas en este ordeño. */
   vacas: number;
-  /** Rows written to produccion_leche (one per ordeño recorded). */
-  mediciones: number;
   totalLitros: number;
 };
+
+/** Se lanza cuando ese ordeño de ese día ya está registrado. */
+export class ControlDuplicado extends Error {
+  constructor(readonly fecha: string, readonly ordeno: string) {
+    super(
+      `Ya hay un control de la ${ordeno === 'manana' ? 'mañana' : 'tarde'} del ${fecha}. ` +
+        'Si necesita corregirlo, hay que borrarlo primero.',
+    );
+    this.name = 'ControlDuplicado';
+  }
+}
+
+// Postgres: violación de unicidad. Se distingue del resto de errores porque es
+// el único que el operario puede entender y accionar — casi siempre es un doble
+// toque en "Guardar" con la señal del corral, no un fallo.
+const esDuplicado = (mensaje: string | undefined): boolean =>
+  !!mensaje && (mensaje.includes('23505') || /duplicate key|unique constraint/i.test(mensaje));
 
 export async function registrarControlLeche(input: S.ControlLecheInput): Promise<ControlLecheResult> {
   const d = S.controlLeche.parse(input);
   const aretes = d.mediciones.map((m) => m.arete);
 
-  // Resolve every arete in one round trip, before writing anything.
+  // Resolver todos los aretes en un viaje, antes de escribir nada.
   //
-  // No findOrCreateAnimal here: the form lists 40-odd cows, and a mistyped arete
-  // would quietly create 1 ghost animal that then shows up in the inventory
-  // count and in the "sin 2º pesaje" figures. And no partial write either —
-  // there are no transactions in supabase-js, so validation has to happen
-  // entirely up front or a bad row leaves the control half-recorded.
+  // Nada de findOrCreateAnimal: la pantalla lista cuarenta vacas y un arete mal
+  // tecleado crearía en silencio un animal fantasma que después aparece en el
+  // inventario. Y nada de escritura parcial: supabase-js no tiene transacciones,
+  // así que la validación entera va por delante o una fila mala deja el control
+  // a medio registrar.
   const { data: encontrados, error: buscarError } = await supabase
     .from('animales')
     .select('id, arete')
@@ -59,37 +78,46 @@ export async function registrarControlLeche(input: S.ControlLecheInput): Promise
     .insert({
       finca_id: FINCA_ID,
       fecha: d.fecha,
+      ordeno: d.ordeno,
+      // created_by es la FK autoritativa; medido_por es la copia del nombre, que
+      // sigue sirviendo si algún día se borra la cuenta del operario.
+      created_by: d.createdBy,
       medido_por: d.medidoPor,
       notas: d.notas,
     })
     .select('id')
     .single();
+
   if (controlError || !control?.id) {
+    if (esDuplicado(controlError?.message)) throw new ControlDuplicado(d.fecha, d.ordeno);
     throw new Error(`registrar control de leche: ${controlError?.message ?? 'sin id devuelto'}`);
   }
 
-  const filas = d.mediciones.flatMap((m) => {
-    const base = { finca_id: FINCA_ID, animal_id: idPorArete.get(m.arete)!, fecha: d.fecha, control_id: control.id, fuente: 'control' };
-    return [
-      m.litrosAm !== null ? { ...base, ordeno: 'manana', litros: m.litrosAm } : null,
-      m.litrosPm !== null ? { ...base, ordeno: 'tarde', litros: m.litrosPm } : null,
-    ].filter((r): r is NonNullable<typeof r> => r !== null);
-  });
+  const filas = d.mediciones.map((m) => ({
+    finca_id: FINCA_ID,
+    animal_id: idPorArete.get(m.arete)!,
+    fecha: d.fecha,
+    ordeno: d.ordeno,
+    litros: m.litros,
+    control_id: control.id,
+    fuente: 'control',
+  }));
 
   const { error: filasError } = await supabase.from('produccion_leche').insert(filas);
   if (filasError) {
-    // Compensating delete: without a transaction, a failed detail insert would
-    // leave an empty header behind, and uq_control_finca_fecha would then reject
-    // every retry for that date — the control could never be re-entered.
+    // Borrado compensatorio: sin transacción, un detalle fallido dejaría una
+    // cabecera huérfana, y uq_control_finca_fecha_ordeno rechazaría después todo
+    // reintento de ese ordeño — el control no se podría volver a capturar nunca.
     await supabase.from('controles_leche').delete().eq('id', control.id);
+    if (esDuplicado(filasError.message)) throw new ControlDuplicado(d.fecha, d.ordeno);
     throw new Error(`registrar mediciones del control: ${filasError.message}`);
   }
 
   return {
     controlId: control.id,
     fecha: d.fecha,
-    vacas: d.mediciones.length,
-    mediciones: filas.length,
+    ordeno: d.ordeno,
+    vacas: filas.length,
     totalLitros: Math.round(filas.reduce((s, r) => s + r.litros, 0) * 10) / 10,
   };
 }

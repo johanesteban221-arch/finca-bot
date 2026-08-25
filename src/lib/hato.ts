@@ -51,49 +51,6 @@ export async function listarOrdeno(): Promise<VacaOrdeno[]> {
     }));
 }
 
-export type ControlReciente = { id: string; fecha: string; vacas: number };
-
-/**
- * Los últimos controles de leche, para que la pantalla muestre cuándo se hizo el
- * anterior. `controles_leche` tiene único (finca_id, fecha): si ya hay uno de
- * hoy, guardar otro falla, y es mejor avisarlo antes de que el operario teclee
- * cuarenta vacas.
- */
-export async function ultimosControles(limite = 5): Promise<ControlReciente[]> {
-  const res = await supabase
-    .from('controles_leche')
-    .select('id, fecha')
-    .eq('finca_id', FINCA_ID)
-    .order('fecha', { ascending: false })
-    .limit(limite);
-  const controles = unwrapList<any>(res, 'controles_leche');
-  if (!controles.length) return [];
-
-  // Cuántas vacas trae cada control. Una consulta aparte y no un embed: el
-  // detalle vive en produccion_leche, que tiene una sola FK a controles_leche
-  // pero varias filas por vaca (mañana y tarde), así que el conteo se hace aquí.
-  const mediciones = unwrapList<any>(
-    await supabase
-      .from('produccion_leche')
-      .select('control_id, animal_id')
-      .eq('finca_id', FINCA_ID)
-      .in('control_id', controles.map((c) => c.id)),
-    'produccion_leche (conteo por control)',
-  );
-
-  const vacasPorControl = new Map<string, Set<string>>();
-  for (const m of mediciones) {
-    if (!vacasPorControl.has(m.control_id)) vacasPorControl.set(m.control_id, new Set());
-    vacasPorControl.get(m.control_id)!.add(m.animal_id);
-  }
-
-  return controles.map((c) => ({
-    id: c.id,
-    fecha: c.fecha,
-    vacas: vacasPorControl.get(c.id)?.size ?? 0,
-  }));
-}
-
 /**
  * Hembras activas, para el `<datalist>` de chequeo y protocolo.
  *
@@ -116,6 +73,70 @@ export async function listarHembrasActivas(): Promise<VacaOrdeno[]> {
     arete: a.arete,
     nombre: a.nombre ?? null,
     estadoReproductivo: a.estado_reproductivo ?? null,
+  }));
+}
+
+export type ControlReciente = {
+  id: string;
+  fecha: string;
+  ordeno: 'manana' | 'tarde';
+  vacas: number;
+  litros: number;
+  /** Nombre de quien lo registró, copiado al guardar. */
+  medidoPor: string | null;
+  /** Instante UTC del guardado. Se pinta con selloEnFinca(), no crudo. */
+  guardadoEn: string;
+};
+
+/**
+ * Los últimos ordeños registrados, con lo necesario para VERIFICAR que quedaron
+ * bien: cuántas vacas, cuántos litros, quién y a qué hora exacta.
+ *
+ * Ese "a qué hora" es el punto. El operario acaba de teclear cuarenta vacas con
+ * una mano; lo que necesita ver al terminar no es un aviso verde que dice
+ * "guardado", es la fila con su nombre, la hora y el total — que es lo que le
+ * permite darse cuenta de que guardó la tarde cuando quería guardar la mañana.
+ */
+export async function ultimosControles(limite = 6): Promise<ControlReciente[]> {
+  const res = await supabase
+    .from('controles_leche')
+    .select('id, fecha, ordeno, medido_por, created_at')
+    .eq('finca_id', FINCA_ID)
+    .order('fecha', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(limite);
+  const controles = unwrapList<any>(res, 'controles_leche');
+  if (!controles.length) return [];
+
+  // El detalle vive en produccion_leche. Consulta aparte y no embed: hay varias
+  // filas por control (una por vaca) y aquí se necesita el agregado.
+  const mediciones = unwrapList<any>(
+    await supabase
+      .from('produccion_leche')
+      .select('control_id, animal_id, litros')
+      .eq('finca_id', FINCA_ID)
+      .in('control_id', controles.map((c) => c.id)),
+    'produccion_leche (resumen por control)',
+  );
+
+  const resumen = new Map<string, { vacas: Set<string>; litros: number }>();
+  for (const m of mediciones) {
+    if (!resumen.has(m.control_id)) resumen.set(m.control_id, { vacas: new Set(), litros: 0 });
+    const r = resumen.get(m.control_id)!;
+    r.vacas.add(m.animal_id);
+    r.litros += Number(m.litros) || 0;
+  }
+
+  return controles.map((c) => ({
+    id: c.id,
+    fecha: c.fecha,
+    ordeno: c.ordeno,
+    vacas: resumen.get(c.id)?.vacas.size ?? 0,
+    // numeric(6,2) llega como string desde PostgREST; el redondeo evita que la
+    // suma de decimales muestre 247.79999999999998 L.
+    litros: Math.round((resumen.get(c.id)?.litros ?? 0) * 10) / 10,
+    medidoPor: c.medido_por ?? null,
+    guardadoEn: c.created_at,
   }));
 }
 

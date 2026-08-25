@@ -45,3 +45,62 @@ export const addDays = (n: number): string => shiftDate(today(), n);
 /** Whole days from ISO date `a` to ISO date `b`. Negative when `b` precedes `a`. */
 export const daysBetween = (a: string, b: string): number =>
   Math.round((utcMidnight(b) - utcMidnight(a)) / 86_400_000);
+
+// ---------------------------------------------------------------------
+// Instantes en hora de finca
+//
+// Lo de arriba son fechas de CALENDARIO. Esto es lo otro: un instante UTC
+// (`created_at`) mostrado en la hora que el operario tenía en el reloj. Sigue
+// valiendo la regla — el instante se GUARDA en UTC y nunca pasa por today() —
+// pero para pintarlo hay que traducirlo, y sin esto cada pantalla improvisaría
+// su propio `toLocaleString`, que en el servidor corre en UTC y mostraría las
+// 6:42 de la mañana como las 11:42.
+// ---------------------------------------------------------------------
+
+const farmClock = new Intl.DateTimeFormat('es-CO', {
+  timeZone: FARM_TIMEZONE,
+  hour: 'numeric',
+  minute: '2-digit',
+  hour12: true,
+});
+
+const farmStamp = new Intl.DateTimeFormat('es-CO', {
+  timeZone: FARM_TIMEZONE,
+  day: '2-digit',
+  month: 'short',
+  hour: 'numeric',
+  minute: '2-digit',
+  hour12: true,
+});
+
+/** Hora de finca de un instante ISO, p. ej. "6:42 a. m.". */
+export const horaEnFinca = (iso: string): string => farmClock.format(new Date(iso));
+
+/** Fecha corta + hora de finca, p. ej. "24 ago, 6:42 a. m.". */
+export const selloEnFinca = (iso: string): string => farmStamp.format(new Date(iso));
+
+export type Ordeno = 'manana' | 'tarde';
+
+export const ORDENO_LABEL: Record<Ordeno, string> = {
+  manana: 'Mañana',
+  tarde: 'Tarde',
+};
+
+/**
+ * Qué ordeño proponer según la hora de la finca.
+ *
+ * Antes del mediodía, mañana. Es una sugerencia para que el operario no tenga
+ * que tocar nada en el caso normal — el selector sigue estando y manda él, que
+ * es lo que permite registrar la mañana a las 2 de la tarde cuando hubo que
+ * salir a arreglar una cerca.
+ */
+export function ordenoSugerido(): Ordeno {
+  const hora = Number(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: FARM_TIMEZONE,
+      hour: '2-digit',
+      hour12: false,
+    }).format(new Date()),
+  );
+  return hora < 12 ? 'manana' : 'tarde';
+}
