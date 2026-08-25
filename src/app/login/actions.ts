@@ -26,7 +26,19 @@ export async function iniciarSesion(formData: FormData): Promise<void> {
   const { data, error } = await cliente.auth.signInWithPassword({ email, password });
   // El motivo real no se le dice al que está afuera: "correo inexistente" y
   // "contraseña mala" separados le confirman a un extraño qué correos existen.
-  if (error || !data?.user) redirect(volver('credenciales'));
+  // Al LOG del servidor sí va completo: desde afuera una anon key inválida, un
+  // rate limit y una clave equivocada se ven idénticos, y sin esta línea los
+  // tres cuestan lo mismo de diagnosticar. Nunca se registra la contraseña.
+  if (error || !data?.user) {
+    console.error(
+      '[login] falló %s — status=%s code=%s message=%s',
+      email,
+      error?.status ?? '-',
+      (error as { code?: string } | null)?.code ?? '-',
+      error?.message ?? 'sin error, pero tampoco vino el usuario',
+    );
+    redirect(volver('credenciales'));
+  }
 
   await registrarAcceso(data.user.id);
   redirect(desde);
