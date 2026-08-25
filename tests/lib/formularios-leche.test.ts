@@ -8,6 +8,10 @@
 //     contrario: «no la ordeñé» contra «dio cero».
 //   · Nunca una fila ordeno='total'. analytics.ts suma litros sin mirar `ordeno`,
 //     así que una tercera fila duplicaría la producción del hato.
+//   · La mañana y la tarde del mismo día son dos controles y tienen que convivir;
+//     repetir el MISMO ordeño tiene que rechazarse. Los dos casos eran invisibles
+//     hasta que el fake aprendió a hacer cumplir los índices únicos.
+//   · La identidad de quien registra sale de la sesión, nunca del formulario.
 //   · El veterinario NO registra el ordeño: es operación, no clínica.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -49,7 +53,7 @@ import { registrarControlAction } from '../../src/app/dashboard/leche/actions';
 import ControlLeche from '../../src/app/dashboard/leche/page';
 import { numeroOpcional, opcionDe, texto, CampoInvalido, mensajeDeError } from '../../src/lib/forms';
 import { resetDb } from '../helpers/db';
-import { comoRol, sinSesion, resetSesion } from '../helpers/auth';
+import { comoRol, sinSesion, resetSesion, DUENO } from '../helpers/auth';
 import { correr, form, seedFormularios } from '../helpers/formularios';
 import type { FakeSupabase } from '../helpers/fake-supabase';
 import { NOW, TODAY } from '../helpers/harness';
@@ -91,8 +95,8 @@ describe('lectura de FormData', () => {
   });
 
   it('desempaca los issues de zod en vez de mostrar el JSON crudo', () => {
-    const zodish = { issues: [{ path: ['mediciones', 0, 'litrosAm'], message: 'Muy alto.' }] };
-    expect(mensajeDeError(zodish)).toBe('mediciones.litrosAm: Muy alto.');
+    const zodish = { issues: [{ path: ['mediciones', 0, 'litros'], message: 'Muy alto.' }] };
+    expect(mensajeDeError(zodish)).toBe('mediciones.litros: Muy alto.');
   });
 
   it('texto() exige el campo obligatorio', () => {
@@ -102,36 +106,72 @@ describe('lectura de FormData', () => {
 
 // =====================================================================
 describe('control lechero — escritura', () => {
-  it('guarda solo las vacas con algún ordeño escrito', async () => {
-    const url = await correr(
-      registrarControlAction,
-      form({ fecha: TODAY, medidoPor: 'Johan', 'am:045': '8', 'pm:045': '6', 'am:077': '', 'pm:077': '' }),
-    );
+  const enviar = (campos: Record<string, string>) =>
+    correr(registrarControlAction, form({ fecha: TODAY, ordeno: 'manana', ...campos }));
 
-    expect(url).toContain('?ok=');
+  it('guarda solo las vacas con litros escritos', async () => {
+    const url = await enviar({ 'l:045': '8', 'l:077': '' });
+
+    expect(url).toContain('ok=');
     const filas = db.rows('produccion_leche');
-    expect(filas).toHaveLength(2);
-    expect(filas.every((f) => f.animal_id === 'a1')).toBe(true);
+    expect(filas).toHaveLength(1);
+    expect(filas[0].animal_id).toBe('a1');
   });
 
   it('un 0 SÍ es una medición: la vaca que no dio nada se registra', async () => {
-    await correr(registrarControlAction, form({ fecha: TODAY, 'am:045': '0', 'pm:045': '' }));
+    await enviar({ 'l:045': '0' });
 
-    const filas = db.rows('produccion_leche');
-    expect(filas).toHaveLength(1);
-    expect(filas[0]).toMatchObject({ ordeno: 'manana', litros: 0 });
+    expect(db.rows('produccion_leche')[0]).toMatchObject({ ordeno: 'manana', litros: 0 });
   });
 
   it('nunca escribe una fila ordeno=total — duplicaría la producción del hato', async () => {
-    await correr(registrarControlAction, form({ fecha: TODAY, 'am:045': '8', 'pm:045': '6' }));
+    await enviar({ 'l:045': '8' });
 
     const ordenos = db.rows('produccion_leche').map((f) => f.ordeno);
-    expect(ordenos.sort()).toEqual(['manana', 'tarde']);
+    expect(ordenos).toEqual(['manana']);
     expect(ordenos).not.toContain('total');
   });
 
+  it('el ordeño elegido es el que se guarda', async () => {
+    await enviar({ ordeno: 'tarde', 'l:045': '5' });
+
+    expect(db.rows('produccion_leche')[0].ordeno).toBe('tarde');
+    expect(db.rows('controles_leche')[0].ordeno).toBe('tarde');
+  });
+
+  it('la mañana y la tarde del mismo día conviven', async () => {
+    // El caso que el esquema viejo hacía imposible: la tarde chocaba con la
+    // unicidad por (finca, fecha) y el operario no podía registrarla.
+    await enviar({ ordeno: 'manana', 'l:045': '8' });
+    const url = await enviar({ ordeno: 'tarde', 'l:045': '5' });
+
+    expect(url).toContain('ok=');
+    expect(db.rows('produccion_leche').map((f) => f.ordeno).sort()).toEqual(['manana', 'tarde']);
+  });
+
+  it('repetir el mismo ordeño se rechaza — el doble toque no duplica litros', async () => {
+    await enviar({ 'l:045': '8' });
+    const url = await enviar({ 'l:045': '8' });
+
+    expect(url).toContain('error=');
+    expect(url).toMatch(/ya hay un control/i);
+    // Lo que importa: los litros no se sumaron dos veces. analytics.ts suma sin
+    // mirar nada, así que una fila de más no daría ningún síntoma.
+    expect(db.rows('produccion_leche')).toHaveLength(1);
+  });
+
+  it('la identidad sale de la sesión, no del formulario', async () => {
+    // Se mandan los campos que ANTES eran editables: deben ignorarse por completo.
+    await enviar({ 'l:045': '8', medidoPor: 'El Zorro', createdBy: 'lo-que-sea' });
+
+    expect(db.rows('controles_leche')[0]).toMatchObject({
+      created_by: DUENO.id,
+      medido_por: DUENO.nombre,
+    });
+  });
+
   it('estampa finca_id y fuente=control en cada fila', async () => {
-    await correr(registrarControlAction, form({ fecha: TODAY, 'am:045': '8' }));
+    await enviar({ 'l:045': '8' });
 
     for (const f of db.rows('produccion_leche')) {
       expect(f.finca_id).toBe(FINCA_ID);
@@ -140,11 +180,8 @@ describe('control lechero — escritura', () => {
     expect(db.rows('controles_leche')[0].finca_id).toBe(FINCA_ID);
   });
 
-  it('un arete que no existe aborta el control entero, sin escribir nada', async () => {
-    const url = await correr(
-      registrarControlAction,
-      form({ fecha: TODAY, 'am:045': '8', 'am:999': '5' }),
-    );
+  it('un arete que no existe aborta el ordeño entero, sin escribir nada', async () => {
+    const url = await enviar({ 'l:045': '8', 'l:999': '5' });
 
     expect(url).toContain('error=');
     expect(url).toContain('999');
@@ -152,16 +189,24 @@ describe('control lechero — escritura', () => {
     expect(db.rows('controles_leche')).toHaveLength(0);
   });
 
-  it('no guarda nada si no se llenó ningún ordeño', async () => {
-    const url = await correr(registrarControlAction, form({ fecha: TODAY, 'am:045': '', 'pm:045': '' }));
+  it('no guarda nada si no se llenó ninguna vaca', async () => {
+    const url = await enviar({ 'l:045': '', 'l:077': '' });
 
     expect(url).toContain('error=');
     expect(db.rows('controles_leche')).toHaveLength(0);
   });
 
+  it('devuelve al operario al ordeño en el que estaba', async () => {
+    const url = await enviar({ ordeno: 'tarde', 'l:045': '' });
+
+    // Sin esto, un error lo mandaría al ordeño que sugiere el reloj y tendría
+    // que volver a elegirlo antes de reintentar.
+    expect(url).toContain('ordeno=tarde');
+  });
+
   it('el veterinario no puede registrarlo — no opera el ordeño', async () => {
     comoRol('veterinario');
-    const url = await correr(registrarControlAction, form({ fecha: TODAY, 'am:045': '8' }));
+    const url = await enviar({ 'l:045': '8' });
 
     expect(url).toContain('error=');
     expect(db.rows('produccion_leche')).toHaveLength(0);
@@ -169,7 +214,7 @@ describe('control lechero — escritura', () => {
 
   it('sin sesión no escribe', async () => {
     sinSesion('anonimo');
-    const url = await correr(registrarControlAction, form({ fecha: TODAY, 'am:045': '8' }));
+    const url = await enviar({ 'l:045': '8' });
 
     expect(url).toContain('error=');
     expect(db.rows('controles_leche')).toHaveLength(0);
@@ -181,13 +226,58 @@ describe('control lechero — pantalla', () => {
   const render = async (params: any = {}) =>
     renderToStaticMarkup(await ControlLeche({ searchParams: Promise.resolve(params) }));
 
+  const sembrarControl = () => {
+    db.rows('controles_leche').push({
+      id: 'c1', finca_id: FINCA_ID, fecha: TODAY, ordeno: 'manana',
+      medido_por: 'Johan', created_by: DUENO.id, notas: null,
+      created_at: '2026-08-04T11:42:00.000Z', // 6:42 a. m. en la finca (UTC-5)
+    });
+    db.rows('produccion_leche').push(
+      { id: 'p1', finca_id: FINCA_ID, animal_id: 'a1', fecha: TODAY, ordeno: 'manana', litros: 8, control_id: 'c1', fuente: 'control' },
+      { id: 'p2', finca_id: FINCA_ID, animal_id: 'a2', fecha: TODAY, ordeno: 'manana', litros: 4.5, control_id: 'c1', fuente: 'control' },
+    );
+  };
+
   it('lista las vacas en ordeño y excluye a la seca y al toro', async () => {
     const html = await render();
 
     expect(html).toContain('045');
     expect(html).toContain('077');
-    expect(html).not.toContain('am:090'); // 090 está seca
-    expect(html).not.toContain('am:200'); // 200 es un toro
+    expect(html).not.toContain('l:090'); // 090 está seca
+    expect(html).not.toContain('l:200'); // 200 es un toro
+  });
+
+  it('una sola casilla de litros por vaca, no dos', async () => {
+    const html = await render();
+
+    expect(html).toContain('l:045');
+    expect(html).not.toContain('am:045');
+    expect(html).not.toContain('pm:045');
+  });
+
+  it('el ordeño de la URL manda sobre el que sugiere el reloj', async () => {
+    const html = await render({ ordeno: 'tarde' });
+
+    expect(html).toContain('name="ordeno" value="tarde"');
+  });
+
+  it('el historial muestra litros, quién y a qué hora se guardó', async () => {
+    sembrarControl();
+
+    const html = await render();
+
+    expect(html).toContain('12.5 L'); // suma de las dos vacas
+    expect(html).toContain('Johan');
+    // El instante se guarda en UTC y se pinta en hora de finca. Si esto dijera
+    // 11:42 sería que alguien lo formateó con la hora del contenedor.
+    expect(html).toContain('6:42');
+  });
+
+  it('avisa cuando ese ordeño ya está registrado', async () => {
+    sembrarControl();
+
+    expect(await render({ ordeno: 'manana' })).toContain('ya está registrado');
+    expect(await render({ ordeno: 'tarde' })).not.toContain('ya está registrado');
   });
 
   it('sin sesión no se pinta ni un arete del hato', async () => {
@@ -202,6 +292,6 @@ describe('control lechero — pantalla', () => {
     comoRol('veterinario');
     const html = await render();
 
-    expect(html).not.toContain('Guardar control');
+    expect(html).not.toContain('Guardar ordeño');
   });
 });

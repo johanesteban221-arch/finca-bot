@@ -27,7 +27,9 @@ export async function correr(
   try {
     await accion(fd);
   } catch (e) {
-    if (e instanceof Redirigido) return decodeURIComponent(e.url);
+    // URLSearchParams codifica el espacio como '+', no como '%20', así que
+    // decodeURIComponent a secas dejaría los mensajes llenos de '+'.
+    if (e instanceof Redirigido) return decodeURIComponent(e.url.replace(/\+/g, ' '));
     throw e;
   }
   throw new Error('la acción no redirigió');

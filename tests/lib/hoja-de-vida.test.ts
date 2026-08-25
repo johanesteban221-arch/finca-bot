@@ -386,76 +386,106 @@ describe('protocolo de sincronización', () => {
 
 // =====================================================================
 describe('control de leche manual', () => {
+  // Un control es de UN ordeño (db/05). Antes era uno por día con litrosAm y
+  // litrosPm, y eso hacía imposible registrar la tarde después de la mañana.
   const control = (mediciones: any[], extra: Record<string, any> = {}) =>
-    registrarControlLeche({ medidoPor: 'Johan', mediciones, ...extra });
+    registrarControlLeche({ ordeno: 'manana', medidoPor: 'Johan', mediciones, ...extra });
 
-  it('escribe una fila por ordeño y ninguna con ordeno=total', async () => {
+  it('escribe una fila por vaca y ninguna con ordeno=total', async () => {
     const r = await control([
-      { arete: '045', litrosAm: 6.5, litrosPm: 4 },
-      { arete: '046', litrosAm: 5, litrosPm: 3.5 },
+      { arete: '045', litros: 6.5 },
+      { arete: '046', litros: 5 },
     ]);
 
     const filas = db.insertsInto('produccion_leche');
-    expect(filas).toHaveLength(4);
-    expect(filas.map((f) => f.ordeno).sort()).toEqual(['manana', 'manana', 'tarde', 'tarde']);
+    expect(filas).toHaveLength(2);
+    expect(filas.every((f) => f.ordeno === 'manana')).toBe(true);
     // Un tercer registro 'total' duplicaría la producción del hato en analytics.ts.
     expect(filas.some((f) => f.ordeno === 'total')).toBe(false);
 
-    expect(r).toMatchObject({ vacas: 2, mediciones: 4, totalLitros: 19, fecha: TODAY });
+    expect(r).toMatchObject({ vacas: 2, totalLitros: 11.5, fecha: TODAY, ordeno: 'manana' });
+  });
+
+  it('la mañana y la tarde del mismo día conviven', async () => {
+    // El caso que el esquema viejo hacía imposible: uq_control_finca_fecha
+    // rechazaba el segundo guardado y el operario no podía registrar la tarde.
+    await control([{ arete: '045', litros: 6 }]);
+    await control([{ arete: '045', litros: 4 }], { ordeno: 'tarde' });
+
+    const filas = db.rows('produccion_leche');
+    expect(filas).toHaveLength(2);
+    expect(filas.map((f) => f.ordeno).sort()).toEqual(['manana', 'tarde']);
+    expect(db.rows('controles_leche')).toHaveLength(2);
+  });
+
+  it('repetir el mismo ordeño se rechaza — el doble toque no duplica litros', async () => {
+    await control([{ arete: '045', litros: 6 }]);
+
+    await expect(control([{ arete: '045', litros: 6 }])).rejects.toThrow(/ya hay un control/i);
+
+    // Lo que de verdad importa: los litros NO se sumaron dos veces. analytics.ts
+    // suma sin mirar nada, así que una fila de más no da ningún síntoma.
+    expect(db.rows('produccion_leche')).toHaveLength(1);
+  });
+
+  it('graba quién lo registró: la FK y la copia del nombre', async () => {
+    await control([{ arete: '045', litros: 6 }], {
+      createdBy: '11111111-1111-4111-8111-111111111111',
+      medidoPor: 'Johan Álvarez',
+    });
+
+    const cabecera = db.insertsInto('controles_leche')[0];
+    expect(cabecera).toMatchObject({
+      fecha: TODAY,
+      ordeno: 'manana',
+      created_by: '11111111-1111-4111-8111-111111111111',
+      medido_por: 'Johan Álvarez',
+      finca_id: FINCA_ID,
+    });
   });
 
   it('marca el origen y enlaza cada fila con la cabecera', async () => {
-    await control([{ arete: '045', litrosAm: 6 }]);
+    await control([{ arete: '045', litros: 6 }]);
 
     const cabecera = db.insertsInto('controles_leche')[0];
-    expect(cabecera).toMatchObject({ fecha: TODAY, medido_por: 'Johan', finca_id: FINCA_ID });
     expect(db.insertsInto('produccion_leche')[0]).toMatchObject({
       animal_id: 'a-045', control_id: cabecera.id, fuente: 'control', ordeno: 'manana', litros: 6,
     });
   });
 
-  it('acepta un solo ordeño y omite el que no se midió', async () => {
-    await control([{ arete: '045', litrosPm: 4.5 }]);
-
-    const filas = db.insertsInto('produccion_leche');
-    expect(filas).toHaveLength(1);
-    expect(filas[0]).toMatchObject({ ordeno: 'tarde', litros: 4.5 });
-  });
-
   it('acepta 0 litros como medición válida', async () => {
-    await control([{ arete: '045', litrosAm: 0, litrosPm: 0 }]);
+    await control([{ arete: '045', litros: 0 }]);
 
-    expect(db.insertsInto('produccion_leche')).toHaveLength(2);
+    expect(db.insertsInto('produccion_leche')[0]).toMatchObject({ litros: 0 });
   });
 
   it('rechaza el control completo si algún arete no existe, sin escribir nada', async () => {
     await expect(control([
-      { arete: '045', litrosAm: 6 },
-      { arete: '888', litrosAm: 5 },
-      { arete: '999', litrosAm: 4 },
+      { arete: '045', litros: 6 },
+      { arete: '888', litros: 5 },
+      { arete: '999', litros: 4 },
     ])).rejects.toThrow(/no existen en el hato: 888, 999/);
 
     expect(db.inserts).toHaveLength(0);
   });
 
   it.each([
-    ['aretes repetidos', [{ arete: '045', litrosAm: 6 }, { arete: '045', litrosPm: 4 }], /repetidos/],
-    ['una vaca sin ningún ordeño', [{ arete: '045' }], /al menos un ordeño/],
+    ['aretes repetidos', [{ arete: '045', litros: 6 }, { arete: '045', litros: 4 }], /repetidos/],
     ['lista vacía', [], /al menos una vaca/],
-    ['litros implausibles', [{ arete: '045', litrosAm: 300 }], /implausibles/],
-    ['litros negativos', [{ arete: '045', litrosAm: -2 }], /negativos/],
+    ['litros implausibles', [{ arete: '045', litros: 300 }], /implausibles/],
+    ['litros negativos', [{ arete: '045', litros: -2 }], /negativos/],
   ])('rechaza %s', async (_caso, mediciones, mensaje) => {
     await expect(control(mediciones)).rejects.toThrow(mensaje);
     expect(db.inserts).toHaveLength(0);
   });
 
-  it('borra la cabecera si falla el detalle, para que el control se pueda reintentar', async () => {
+  it('borra la cabecera si falla el detalle, para que el ordeño se pueda reintentar', async () => {
     db.failOn('produccion_leche', 'timeout');
 
-    await expect(control([{ arete: '045', litrosAm: 6 }])).rejects.toThrow(/timeout/);
+    await expect(control([{ arete: '045', litros: 6 }])).rejects.toThrow(/timeout/);
 
-    // Sin este borrado compensatorio, uq_control_finca_fecha rechazaría todo
-    // reintento de ese día y el control quedaría imposible de capturar.
+    // Sin este borrado compensatorio, uq_control_finca_fecha_ordeno rechazaría
+    // todo reintento de ese ordeño y quedaría imposible de capturar.
     expect(db.deletesFrom('controles_leche')).toHaveLength(1);
     expect(db.rows('controles_leche')).toHaveLength(0);
   });
@@ -473,7 +503,7 @@ describe('multi-tenant', () => {
     await registrarAplicacion({ protocoloId, diaNumero: 0, producto: 'Prostaglandina (PGF2a)', dosis: '2 ml' });
     await registrarIaProtocolo({ protocoloId, inseminador: 'Juan Pérez' });
     await cerrarProtocolo({ protocoloId, resultado: 'preno' });
-    await registrarControlLeche({ mediciones: [{ arete: '045', litrosAm: 6, litrosPm: 4 }] });
+    await registrarControlLeche({ ordeno: 'manana', mediciones: [{ arete: '045', litros: 6 }] });
 
     expect(db.inserts.length).toBeGreaterThan(10);
     for (const { table, rows } of db.inserts) {

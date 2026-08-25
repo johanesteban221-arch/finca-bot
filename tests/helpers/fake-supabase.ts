@@ -27,6 +27,38 @@ const PRIMARY_KEYS: Record<string, string> = {
   whatsapp_users: 'telefono',
 };
 
+// Índices únicos que el fake SÍ hace cumplir, espejo de los de db/.
+//
+// Se añadieron porque su ausencia escondía dos bugs reales del control lechero:
+// sin unicidad, un doble envío duplicaba los litros y el test lo daba por bueno.
+// Un fake que acepta lo que Postgres rechaza no es un fake optimista, es un test
+// que miente. Cuando una tabla gane un unique en db/, va también aquí.
+const UNIQUE: Record<string, string[][]> = {
+  produccion_leche: [['animal_id', 'fecha', 'ordeno']],       // uq_leche_animal_fecha_ordeno
+  controles_leche: [['finca_id', 'fecha', 'ordeno']],         // uq_control_finca_fecha_ordeno
+  chequeos_reproductivos: [['animal_id', 'fecha']],           // uq_chequeo_animal_fecha
+  protocolo_aplicaciones: [['protocolo_id', 'dia_numero']],   // uq_aplicacion_paso
+  usuarios: [['email']],
+};
+
+/**
+ * Mensaje idéntico en forma al de Postgres, porque el código de producción lo
+ * inspecciona: domain/leche.ts distingue una violación de unicidad del resto de
+ * fallos para poder decirle al operario "ese ordeño ya está registrado" en vez
+ * de escupirle un error de base de datos.
+ */
+const violaUnico = (tabla: string, existentes: Row[], fila: Row): string | null => {
+  for (const cols of UNIQUE[tabla] ?? []) {
+    if (cols.some((c) => fila[c] === undefined || fila[c] === null)) continue;
+    const choca = existentes.some((r) => cols.every((c) => r[c] === fila[c]));
+    if (choca) {
+      const valores = cols.map((c) => `${c})=(${fila[c]}`).join(', ');
+      return `duplicate key value violates unique constraint on ${tabla} (${valores})`;
+    }
+  }
+  return null;
+};
+
 export type InsertLog = { table: string; rows: Row[] };
 export type UpdateLog = { table: string; patch: Row; filters: [string, any][] };
 export type DeleteLog = { table: string; filters: [string, any][]; rows: Row[] };
@@ -221,6 +253,16 @@ class Builder implements PromiseLike<Result> {
     const table = this.db.rows(this.name);
 
     if (this.op === 'insert') {
+      // Postgres aborta el INSERT entero al primer conflicto y no deja nada
+      // escrito. Se comprueba todo el lote antes de tocar la tabla para que el
+      // fake falle igual: a medias sería peor que no fallar.
+      const previas = [...table];
+      for (const r of this.payload) {
+        const choque = violaUnico(this.name, previas, r);
+        if (choque) return { data: null, error: { message: choque } };
+        previas.push(r);
+      }
+
       const created = this.payload.map((r) => {
         const row = { id: this.db.nextId(this.name), ...r };
         table.push(row);

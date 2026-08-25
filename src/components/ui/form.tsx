@@ -12,9 +12,19 @@
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/cn';
 
+// ⚠️ `text-base` (16px) no es una decisión estética: Safari en iOS hace ZOOM
+// automático sobre cualquier campo de menos de 16px al enfocarlo. Con `text-sm`
+// (14px), llenar el control lechero eran cuarenta zooms y cuarenta
+// reposicionamientos — el formulario se veía bien en el escritorio y era
+// inusable en el corral.
+//
+// La condición es `pointer: fine` (ratón), NO un breakpoint de ancho: un iPhone
+// en horizontal mide 844px y con `sm:` volvería a 14px justo donde el zoom sigue
+// pasando. Lo que importa es con qué se toca la pantalla, no cuánto mide.
 const BASE_CAMPO =
-  'w-full rounded-lg border border-tierra-200 bg-white px-3 py-2 text-sm text-tierra-900 ' +
-  'outline-none focus:border-campo-500 focus:ring-2 focus:ring-campo-200 ' +
+  'w-full rounded-lg border border-tierra-200 bg-white px-3 py-2.5 text-base ' +
+  '[@media(pointer:fine)]:py-2 [@media(pointer:fine)]:text-sm ' +
+  'text-tierra-900 outline-none focus:border-campo-500 focus:ring-2 focus:ring-campo-200 ' +
   'disabled:bg-tierra-50 disabled:text-tierra-400';
 
 export const ETIQUETA = 'text-2xs font-semibold uppercase tracking-wide text-tierra-500';

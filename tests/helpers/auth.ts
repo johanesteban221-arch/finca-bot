@@ -11,8 +11,12 @@
 import type { Rol } from '../../src/lib/auth/roles';
 import { FINCA_ID } from '../../src/lib/tenant';
 
+// El id ES el de auth.users, o sea un uuid. Importa que lo sea: desde Bloque D
+// el control lechero lo guarda en controles_leche.created_by y el esquema lo
+// valida como uuid — un 'u-1' de mentira haría fallar algo que en producción
+// funciona, que es la peor clase de test.
 export const DUENO = {
-  id: 'u-1',
+  id: '11111111-1111-4111-8111-111111111111',
   email: 'dueno@finca.co',
   nombre: 'Johan',
   rol: 'dueno' as Rol,

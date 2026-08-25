@@ -254,6 +254,7 @@ CREATE TABLE whatsapp_user_fincas (
 Apply SQL in this order in the Supabase SQL Editor (all files now live in `db/`):
 `db/schema.sql` → `db/alerts_views.sql` → `db/backup.sql` → `db/01_bot_schema.sql`
 → `db/02_multitenant.sql` → `db/03_hoja_de_vida.sql` → `db/04_auth_roles.sql`
+→ `db/05_control_leche_ordeno.sql`
 
 ⚠️ **`03_hoja_de_vida.sql` is the final definition of `vw_historial_animal` and
 `vw_respaldo_completo`.** The versions in `schema.sql` and `backup.sql` are base
@@ -299,6 +300,9 @@ or `select * from vw_respaldo_completo;`, stored outside the database.
 -- animales(id, finca_id): una FK simple dejaría cruzar fincas sin que RLS lo vea.
 ✅ chequeos_reproductivos · protocolos_sincronizacion · protocolo_aplicaciones
 ✅ controles_leche  (el detalle por vaca va en produccion_leche, no en tabla aparte)
+--   Un control es de UN ORDEÑO, no de un día: unique (finca_id, fecha, ordeno).
+--   `created_by` es la identidad autoritativa y `medido_por` la copia del nombre.
+--   produccion_leche lleva unique (animal_id, fecha, ordeno) — db/05.
 
 -- Tablero: usuarios y roles (db/04_auth_roles.sql). usuarios.id ES auth.users.id;
 -- el rol vive en usuario_fincas, POR FINCA, no en el perfil. Sin columna de
@@ -497,6 +501,18 @@ synchronization protocols, dry-off, manual milk control, unified timeline, famil
         ("I did not milk her" vs "she gave nothing"). A cow with nothing typed is not
         recorded; a `0` is. `lib/forms.ts` is where that distinction is enforced, and it is
         the reason FormData parsing is not improvised per action.
+      - **One control per ORDEÑO, not per day** (`db/05`). The first cut had AM and PM
+        columns on one submit, which made the real workflow impossible: the morning is
+        weighed at 5 and the afternoon at 3, and the second save collided with
+        `unique (finca_id, fecha)`. The screen now records one milking at a time, with the
+        selector pre-picked from the farm clock — and the operator can still override it.
+      - **Who recorded it comes from the session, never from the form.** `created_by` is the
+        FK; `medido_por` is a name snapshot that survives the account being deleted. The old
+        editable "medido por" text box was a signature the signer could rewrite.
+      - **The mobile inputs are 16px**, gated on `@media(pointer:fine)` rather than a width
+        breakpoint. Safari on iOS zooms into any field under 16px, and an iPhone in landscape
+        is 844px wide — a `sm:` breakpoint would drop back to 14px exactly where the zoom
+        still happens. Forty cows meant forty zooms.
       - **The results travel in the URL** (`?ok=` / `?error=`), which is what keeps these
         pages server components. Safe here because nothing sensitive goes through them.
       - Reads for the forms live in `lib/hato.ts` (not `domain/`, which is the write
@@ -571,7 +587,10 @@ Deferred from the earlier dashboard review:
 - **Dates:** the server runs in UTC, the farm in `America/Bogota` (UTC-5). Any calendar day
   stored in a `fecha` column comes from `src/lib/dates.ts` — never `new Date().toISOString()`,
   which rolls over at 7 PM local and dates the afternoon ordeño to tomorrow. Instants
-  (`updated_at`, `generated_at`) stay UTC ISO and must not go through `dates.ts`.
+  (`updated_at`, `generated_at`, `created_at`) are **stored** as UTC ISO and must never go
+  through `today()`/`addDays()`. Rendering one is the other half: `horaEnFinca()` and
+  `selloEnFinca()` in `dates.ts` translate an instant to the farm clock, because the server
+  runs in UTC and would show a 6:42 AM milking as 11:42.
 - SQL lowercase and idempotent; indexes named `idx_<table>_<column>`.
 - Commits: **Conventional Commits** with scope — `feat(bot):`, `feat(cron):`, `fix(docker):`.
 - n8n workflows: `GDP ·` prefix, `WF-NN` numbering, node names in Spanish.
@@ -582,13 +601,18 @@ Deferred from the earlier dashboard review:
 ---
 
 ## Tests
-`npm test` (Vitest, run mode) · `npm run test:watch`. 270 tests. Test-only dependency — the
+`npm test` (Vitest, run mode) · `npm run test:watch`. 280 tests. Test-only dependency — the
 Docker production build is untouched.
 
 - `tests/helpers/fake-supabase.ts` — in-memory Supabase covering the query surface the app
   uses: `eq/gte/lte/gt/lt/not(is,null)`, `order`, `limit`, dotted paths for embedded
   resources (`animales.estado_reproductivo`), and `failOn(table)` to exercise error paths.
   Extend it when a query starts using a new shape.
+  ⚠️ It also enforces the **unique indexes** listed in its `UNIQUE` map, aborting the whole
+  insert like Postgres does. That was added because its absence hid two real milk-control
+  bugs: without uniqueness a double submit duplicated the litres and the test called it
+  green. A fake that accepts what Postgres rejects is not an optimistic fake, it is a test
+  that lies — so when a table gains a unique in `db/`, add it there too.
 - `tests/helpers/harness.ts` — stubs global `fetch` to capture outgoing Meta payloads,
   freezes the clock, seeds catalogs.
 - Flow tests run through `handleMessage`, the same entry point as the webhook, so routing
@@ -637,11 +661,13 @@ query into a convincing empty result. Every read goes through `unwrapList()` in
 
 ---
 
-*Last updated 2026-08-24: Bloque D closed — the three capture forms (control lechero,
-chequeo reproductivo, protocolos) ship as server-rendered pages with zero client JS, each
-guarded per role. `AUTH_LEGACY_BASIC` is OFF: the dashboard now logs in only with email +
-password. `GET /api/version` reports the running image (sha + build timestamp), which is how
-"did my commit deploy?" gets answered. 270 tests. Next: the `foto_url` upload that Bloque D
-left open → Fase 3 (the nine flows as forms) → `whatsapp_user_fincas`.*
+*Last updated 2026-08-24: Bloque D closed, then the control lechero reworked for daily field
+use — one control per ORDEÑO instead of per day (`db/05`, APPLY BEFORE DEPLOYING), identity
+from the session, farm-clock timestamps, 16px inputs, history on top. That rework fixed two
+real defects: the afternoon milking could not be saved at all, and `produccion_leche` had no
+unique index, so a double tap silently doubled the herd's production. The fake Supabase now
+enforces unique indexes — without that, both bugs tested green. `AUTH_LEGACY_BASIC` is OFF.
+`GET /api/version` reports the running image. 280 tests. Next: the `foto_url` upload that
+Bloque D left open → Fase 3 (the nine flows as forms) → `whatsapp_user_fincas`.*
 *Sections marked 🎯 are decided design, not implemented — verify against code before relying on them.*
 *Full project brief: `docs/README-ganaderia.md` (⚠️ outdated — describes n8n as primary).*
