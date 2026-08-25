@@ -10,9 +10,10 @@
 --
 -- ⚠️ ESTE ARCHIVO ES LA DEFINICIÓN FINAL DE vw_leche_ordeno. La de 06 es la
 --    versión base (solo produccion_leche), válida en su punto de la cadena.
---    Volver a correr 06 solo, sin correr 07 después, deja el tablero ciego a
---    los totales de cantina — que son la mayoría de los días. Mismo patrón que
---    03_hoja_de_vida.sql con vw_historial_animal.
+--    Mismo patrón que 03_hoja_de_vida.sql con vw_historial_animal, pero con una
+--    protección que aquél no tiene: como las columnas cambiaron de forma, volver
+--    a correr 06 después de 07 ya no revierte la vista en silencio — revienta
+--    con el mismo 42P16 (ver el punto 3).
 --
 -- Qué añade:
 --
@@ -124,8 +125,26 @@ create index if not exists idx_controles_leche_tipo_fecha
 --
 -- `vacas` y `litros_individual` quedan NULL los días de solo cantina: no se
 -- sabe cuántas vacas se ordeñaron, y poner un número sería inventarlo.
+--
+-- ⚠️ DROP y no `create or replace`. Postgres solo deja reemplazar una vista si
+-- las columnas nuevas son las viejas EN EL MISMO ORDEN más otras al final;
+-- aquí `medido_con` se mete en medio y falla con:
+--     ERROR 42P16: cannot change name of view column "vacas" to "medido_con"
+--
+-- Sin CASCADE a propósito. Hoy nada depende de esta vista (solo la consulta la
+-- app), así que el DROP a secas basta. Si algún día falla por una dependencia,
+-- ESE fallo es la señal: CASCADE la borraría en silencio y el script seguiría
+-- diciendo que todo salió bien, que es justo la clase de error que este
+-- proyecto persigue. En ese caso hay que mirar qué depende y decidir, no
+-- añadir CASCADE para que se calle.
+--
+-- Efecto secundario bueno: db/06 hace `create or replace` sobre esta misma
+-- vista, así que volver a correrlo DESPUÉS de 07 ya no la revierte en silencio
+-- — falla con el mismo 42P16.
 -- ============================================================================
-create or replace view vw_leche_ordeno
+drop view if exists vw_leche_ordeno;
+
+create view vw_leche_ordeno
 with (security_invoker = true) as
 with individual as (
   select finca_id, fecha, ordeno,

@@ -288,9 +288,12 @@ Apply SQL in this order in the Supabase SQL Editor (all files now live in `db/`)
 
 ⚠️ **`07_produccion_diaria.sql` is the final definition of `vw_leche_ordeno`.** The one
 in `06` is the base version (only `produccion_leche`), valid at its point in the chain.
-Re-running `06` alone without re-running `07` leaves the dashboard blind to the tank
-totals — which are most of the days. `06` is kept as a step of its own, not merged: it is
-already applied in production and the project does not rewrite applied SQL.
+`06` is kept as a step of its own, not merged: it is already applied in production and the
+project does not rewrite applied SQL. Unlike the `03` case, this one cannot revert
+silently — `07` changes the view's column shape, so `06`'s `create or replace` now fails
+with `42P16` instead of quietly dropping the tank totals. `07` itself drops and recreates
+the view for that same reason, **without `CASCADE`**: nothing depends on it today, and a
+failure there would be a dependency worth looking at, not something to silence.
 
 ⚠️ **`03_hoja_de_vida.sql` is the final definition of `vw_historial_animal` and
 `vw_respaldo_completo`.** The versions in `schema.sql` and `backup.sql` are base
