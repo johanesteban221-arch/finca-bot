@@ -80,6 +80,9 @@ export type ControlReciente = {
   id: string;
   fecha: string;
   ordeno: 'manana' | 'tarde';
+  /** 'diario' = total de cantina · 'individual' = conteo vaca por vaca (db/07). */
+  tipo: 'diario' | 'individual';
+  /** Vacas del conteo. 0 en un total de cantina: ahí no hay desglose. */
   vacas: number;
   litros: number;
   /** Nombre de quien lo registró, copiado al guardar. */
@@ -103,7 +106,7 @@ export type ControlReciente = {
 export async function ultimosControles(limite = 8): Promise<ControlReciente[]> {
   const res = await supabase
     .from('controles_leche')
-    .select('id, fecha, ordeno, medido_por, created_at')
+    .select('id, fecha, ordeno, tipo, litros_total, medido_por, created_at')
     .eq('finca_id', FINCA_ID)
     .order('fecha', { ascending: false })
     .order('created_at', { ascending: false })
@@ -111,16 +114,20 @@ export async function ultimosControles(limite = 8): Promise<ControlReciente[]> {
   const controles = unwrapList<any>(res, 'controles_leche');
   if (!controles.length) return [];
 
-  // El detalle vive en produccion_leche. Consulta aparte y no embed: hay varias
-  // filas por control (una por vaca) y aquí se necesita el agregado.
-  const mediciones = unwrapList<any>(
-    await supabase
-      .from('produccion_leche')
-      .select('control_id, animal_id, litros')
-      .eq('finca_id', FINCA_ID)
-      .in('control_id', controles.map((c) => c.id)),
-    'produccion_leche (resumen por control)',
-  );
+  // El detalle solo existe para los conteos individuales; un total de cantina no
+  // tiene filas por vaca. Pedirlas para todos traería la lista de ids de más y,
+  // con `in()` vacío, una consulta que no hace falta.
+  const idsConDetalle = controles.filter((c) => c.tipo !== 'diario').map((c) => c.id);
+  const mediciones = idsConDetalle.length
+    ? unwrapList<any>(
+        await supabase
+          .from('produccion_leche')
+          .select('control_id, animal_id, litros')
+          .eq('finca_id', FINCA_ID)
+          .in('control_id', idsConDetalle),
+        'produccion_leche (resumen por control)',
+      )
+    : [];
 
   const resumen = new Map<string, { vacas: Set<string>; litros: number }>();
   for (const m of mediciones) {
@@ -130,17 +137,24 @@ export async function ultimosControles(limite = 8): Promise<ControlReciente[]> {
     r.litros += Number(m.litros) || 0;
   }
 
-  return controles.map((c) => ({
-    id: c.id,
-    fecha: c.fecha,
-    ordeno: c.ordeno,
-    vacas: resumen.get(c.id)?.vacas.size ?? 0,
-    // numeric(6,2) llega como string desde PostgREST; el redondeo evita que la
-    // suma de decimales muestre 247.79999999999998 L.
-    litros: Math.round((resumen.get(c.id)?.litros ?? 0) * 10) / 10,
-    medidoPor: c.medido_por ?? null,
-    guardadoEn: c.created_at,
-  }));
+  return controles.map((c) => {
+    const tipo: 'diario' | 'individual' = c.tipo === 'diario' ? 'diario' : 'individual';
+    // El total de cantina es un dato, no una derivación: se lee tal cual. El del
+    // conteo se suma, porque su `litros_total` es NULL a propósito (db/07).
+    const litros = tipo === 'diario' ? Number(c.litros_total) || 0 : resumen.get(c.id)?.litros ?? 0;
+    return {
+      id: c.id,
+      fecha: c.fecha,
+      ordeno: c.ordeno,
+      tipo,
+      vacas: resumen.get(c.id)?.vacas.size ?? 0,
+      // numeric llega como string desde PostgREST; el redondeo evita que la suma
+      // de decimales muestre 247.79999999999998 L.
+      litros: Math.round(litros * 10) / 10,
+      medidoPor: c.medido_por ?? null,
+      guardadoEn: c.created_at,
+    };
+  });
 }
 
 export type ProtocoloAbierto = {

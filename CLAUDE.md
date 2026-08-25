@@ -71,36 +71,53 @@ state machines — no LLM is used to parse incoming messages. ✅ This is how `f
 > **Status:** no Anthropic SDK in `package.json`, no Claude call anywhere in `finca-bot/`.
 > The only LLM in the system today is OpenAI (intent parsing + Whisper) inside n8n `WF-01`.
 
-### Milk production: every cow, both milkings, every day
+### Milk production: two records per milking, not one
 > **Status:** the ESP32 endpoint is still 🎯 — it does not exist, and there is no
 > `X-Device-Key` auth. Today the app exposes 3 API routes (whatsapp/webhook,
 > cron/daily-alerts, cron/backup).
->
-> ✅ `produccion_leche` **has a writer**: `domain/leche.registrarControlLeche()`, driven
-> from `/dashboard/leche`. Its form is Bloque D.
 
-**The real flow, confirmed by the founder on 2026-08-25: the operator measures every cow
-with a meter, in BOTH milkings, EVERY day.** There is no separate bulk-total entry and no
-periodic spot check. The total of a milking is the sum of its per-cow rows, and nothing
-else is ever typed. A second "daily total" mode (a `tipo` discriminator on
-`controles_leche`) was designed and **discarded before being written** — it modelled a
-workflow this farm does not have. Do not reintroduce it unless the founder says the flow
-changed.
+**The real flow, settled with the founder on 2026-08-25 after two corrections — read this
+before redesigning anything here.** A milking produces up to two *different* records:
+
+| | Total de cantina | Conteo individual |
+|---|---|---|
+| How often | almost every day | every 2-3 weeks |
+| What it is | one number, the tank | one row per cow |
+| Lands in | `controles_leche` (`tipo='diario'`, `litros_total`) | `controles_leche` (`tipo='individual'`) + `produccion_leche` |
+| Writer | `domain/leche.registrarProduccionDiaria()` | `domain/leche.registrarControlLeche()` |
+
+⚠️ **The daily total NEVER writes a row in `produccion_leche`.** That table is `animal_id
+NOT NULL` with an FK to `animales` and it feeds `vw_historial_animal`; a herd total has no
+animal, and forcing one in would need a ghost «CANTINA» cow showing up in the inventory,
+the genealogy and the milking list. That one line is what keeps the two modes from mixing.
+
+**They coexist in the same milking on purpose** (`db/07` widened the unique to include
+`tipo`). Two instruments measuring the same milking, and both are worth keeping: the tank
+is what got sold, the breakdown is how it split across cows. Their difference is the
+**cuadre**, shown on `/dashboard/leche` when both exist — a couple of litres is splash and
+the calf, forty litres is someone milking into a bucket. Making them replace each other
+would destroy exactly that signal.
+
+⚠️ **Herd volume is read from `vw_leche_ordeno`, never from `produccion_leche` raw** — and
+the view **prefers the tank** when both exist. Not arbitrary: the tank is the instrument
+present *every* day and the breakdown only one day in fifteen, so preferring the breakdown
+would splice a second instrument into the series and draw a step every 2-3 weeks that never
+happened in the field (the sum of cows always lands a bit under the tank).
+
+Consequence for the KPIs: «Vacas en ordeño» and «Litros/vaca/día» can only come from the
+**counting days**. Dividing the tank by a cow count nobody took that day would be inventing
+the divisor, so with no count in the window they render «—», never 0 — a 0 there reads as
+"no cows milking", which is false.
 
 `produccion_leche.fuente` (`manual` | `control` | `hardware`) stays: the ESP32 will write
-the same rows through the same shape. `controles_leche` is the per-ordeño header — one row
-per `(finca, fecha, ordeño)` with who recorded it and when.
+the same rows through the same shape.
 
-⚠️ **The total is never stored.** AM → `ordeno='manana'`, PM → `ordeno='tarde'`, total is
-derived by summing. `ordeno` still accepts a third value, `'total'`, which is also the
-column DEFAULT in `schema.sql`: no write path produces it, but a loose INSERT that omits
+⚠️ **The count's total is never stored.** AM → `ordeno='manana'`, PM → `ordeno='tarde'`,
+and the count's total is derived by summing — which is why `litros_total` is NULL on
+`tipo='individual'` headers. `ordeno` still accepts a third value, `'total'`, which is also
+the column DEFAULT in `schema.sql`: no write path produces it, but a loose INSERT that omits
 `ordeno` lands there and `vw_leche_ordeno` would add it as a third milking of the day.
 `db/diagnostics/leche_total_conviviendo.sql` finds those rows.
-
-⚠️ **Herd volume is read from `vw_leche_ordeno` (`db/06`), never from `produccion_leche`
-raw.** Two milkings a day is ~730 rows per cow per year; 30 days of a 20-cow herd is 1200
-rows, past PostgREST's 1000-row cap. That is what closed task #7 — read it below before
-adding any new query over this table.
 
 ### Key files
 - `src/lib/handler.ts` (~115 lines) — orchestrator: auth, global shortcuts, routing tables. No step logic.
@@ -267,6 +284,13 @@ Apply SQL in this order in the Supabase SQL Editor (all files now live in `db/`)
 `db/schema.sql` → `db/alerts_views.sql` → `db/backup.sql` → `db/01_bot_schema.sql`
 → `db/02_multitenant.sql` → `db/03_hoja_de_vida.sql` → `db/04_auth_roles.sql`
 → `db/05_control_leche_ordeno.sql` → `db/06_leche_agregada.sql`
+→ `db/07_produccion_diaria.sql`
+
+⚠️ **`07_produccion_diaria.sql` is the final definition of `vw_leche_ordeno`.** The one
+in `06` is the base version (only `produccion_leche`), valid at its point in the chain.
+Re-running `06` alone without re-running `07` leaves the dashboard blind to the tank
+totals — which are most of the days. `06` is kept as a step of its own, not merged: it is
+already applied in production and the project does not rewrite applied SQL.
 
 ⚠️ **`03_hoja_de_vida.sql` is the final definition of `vw_historial_animal` and
 `vw_respaldo_completo`.** The versions in `schema.sql` and `backup.sql` are base
@@ -312,7 +336,11 @@ or `select * from vw_respaldo_completo;`, stored outside the database.
 -- animales(id, finca_id): una FK simple dejaría cruzar fincas sin que RLS lo vea.
 ✅ chequeos_reproductivos · protocolos_sincronizacion · protocolo_aplicaciones
 ✅ controles_leche  (el detalle por vaca va en produccion_leche, no en tabla aparte)
---   Un control es de UN ORDEÑO, no de un día: unique (finca_id, fecha, ordeno).
+--   Cabecera de LOS DOS registros del ordeño, discriminados por `tipo` (db/07):
+--     'diario'     → total de cantina, litros_total CON número, sin detalle.
+--     'individual' → conteo vaca por vaca, litros_total NULL (se deriva sumando).
+--   Un control es de UN ORDEÑO, no de un día, y los dos tipos conviven:
+--   unique (finca_id, fecha, ordeno, tipo) — db/07.
 --   `created_by` es la identidad autoritativa y `medido_por` la copia del nombre.
 --   produccion_leche lleva unique (animal_id, fecha, ordeno) — db/05.
 
@@ -331,10 +359,13 @@ or `select * from vw_respaldo_completo;`, stored outside the database.
 --         con los permisos de su dueño y evade el RLS de quien consulta — inocuo
 --         bajo service_role, fuga entre fincas en Fase 1)
 ✅ vw_historial_animal · vw_alertas · vw_respaldo_completo · vw_genealogia
-✅ vw_leche_ordeno (db/06)
---   Una fila por finca, fecha y ordeño. Es la ÚNICA fuente del volumen del hato:
---   leer produccion_leche cruda vuelve a poner la agregación del mes por encima
---   del tope de filas de PostgREST.
+✅ vw_leche_ordeno (definición final en db/07)
+--   Una fila por finca, fecha y ordeño, uniendo las dos fuentes. Es la ÚNICA
+--   fuente del volumen del hato: leer produccion_leche cruda además de saltarse
+--   la cantina —la mayoría de los días— vuelve a poner la agregación por encima
+--   del tope de filas de PostgREST. `litros` prefiere la cantina; `vacas` y
+--   `litros_individual` son NULL los días sin conteo, y eso es un dato, no un
+--   hueco: significa que nadie contó vacas ese día.
 ```
 
 ### Vocabulario clínico del chequeo reproductivo
@@ -517,10 +548,14 @@ synchronization protocols, dry-off, manual milk control, unified timeline, famil
         Forty boxes with no running total is how an 85 typed for 8,5 goes unnoticed until
         the month looks wrong. The only two `'use client'` files are still the ones that
         show a password, and for a different reason.
-      - **A blank box is not 0 litres.** They look the same on screen and mean the opposite
-        ("I did not milk her" vs "she gave nothing"). A cow with nothing typed is not
-        recorded; a `0` is. `lib/forms.ts` is where that distinction is enforced, and it is
-        the reason FormData parsing is not improvised per action.
+      - **A blank box is not 0 litres — and it means something different in each mode.**
+        In the per-cow count, blank is "I did not milk her" and `0` is "she gave nothing":
+        they look identical on screen and mean the opposite, so a cow with nothing typed is
+        not recorded and a `0` is. In the tank total, blank is "I do not have the number"
+        and is **rejected**, because saving a 0 for it would put a day of zero production
+        into the herd's series. Both read through `lib/forms.ts` (`numeroOpcional` returns
+        null for blank); each action decides what null means. That is why FormData parsing
+        is not improvised per action.
       - **One control per ORDEÑO, not per day** (`db/05`). The first cut had AM and PM
         columns on one submit, which made the real workflow impossible: the morning is
         weighed at 5 and the afternoon at 3, and the second save collided with
@@ -553,10 +588,13 @@ Deferred from the earlier dashboard review:
       purpose to test the isolation.
 - [x] ~~**7. Bound the unpaginated queries**~~ — done 2026-08-25, forced by the daily
       measurement above (20 cows × 2 milkings × 30 days = 1200 rows). Two halves:
-      **`vw_leche_ordeno`** (`db/06`) pushes the milk aggregation into Postgres — ~60 rows a
-      month instead of 1200+ — and **`paginar()`** in `src/lib/supabase.ts` walks `.range()`
-      pages until one comes back short, for `animales`, `pesajes`, `eventos_reproductivos`,
-      `eventos_sanitarios` and `movimientos`.
+      **`vw_leche_ordeno`** pushes the milk aggregation into Postgres — ~60 rows a month
+      instead of one per cow per milking — and **`paginar()`** in `src/lib/supabase.ts`
+      walks `.range()` pages until one comes back short, for `animales`, `pesajes`,
+      `eventos_reproductivos`, `eventos_sanitarios` and `movimientos`.
+      (The 1200-row milk month that forced this turned out to be a wrong premise — the
+      count is every 2-3 weeks, not daily. The view is still the right shape, and now for a
+      second reason: it is where the tank total and the per-cow count become one series.)
       Two rules to keep: every paginated query must end its ordering on a **unique** column
       (`id`) — without a total order, rows swap between pages and one repeats while another
       is lost; and past the page ceiling `paginar` **throws** instead of truncating, because
@@ -567,12 +605,13 @@ Deferred from the earlier dashboard review:
       `fuente`. Its dashboard form is Bloque D.
 - [ ] **9. "Sin 2º pesaje" undercounts** — `analytics.ts` only walks animals that already have
       at least one weighing, so animals never weighed are invisible in the peso section.
-- [ ] **11. The animal record drowns in milk rows** — `vw_historial_animal` includes
-      `produccion_leche` and `ficha.ts` reads the newest 200 events. At two milkings a day
-      that is ~730 milk events per cow per year, so within ~3 months a cow's hoja de vida
-      shows nothing but ordeños and the vaccination or the service is buried. Filter milk
-      out of the timeline or give it its own section. Direct consequence of the daily
-      cadence, and it lands quietly: nothing errors, the history just stops being useful.
+- [ ] **11. Milk rows crowd the animal record** — `vw_historial_animal` includes
+      `produccion_leche` and `ficha.ts` reads the newest 200 events. Filed when the count
+      looked daily (~730 events per cow per year, which buried everything else within
+      months); with the count every 2-3 weeks it is ~35 a year, so this is slow, not urgent
+      — but it still only ever gets worse, and it lands quietly: nothing errors, the
+      history just stops being useful. Filter milk out of the timeline or give it its own
+      section. The tank totals are not part of this: they write nothing per animal.
 - [ ] **10. Promote the mortality cause to a column** — `flows/mortalidad.ts` writes it into
       `movimientos.notas` as `"Causa: X"` and `analytics.ts` parses it back out with a regex.
       A real `causa` column (FK to `cat_causas_mortalidad`) would remove the round trip.
@@ -633,7 +672,7 @@ Deferred from the earlier dashboard review:
 ---
 
 ## Tests
-`npm test` (Vitest, run mode) · `npm run test:watch`. 287 tests. Test-only dependency — the
+`npm test` (Vitest, run mode) · `npm run test:watch`. 297 tests. Test-only dependency — the
 Docker production build is untouched.
 
 - `tests/helpers/fake-supabase.ts` — in-memory Supabase covering the query surface the app
@@ -644,7 +683,10 @@ Docker production build is untouched.
   insert like Postgres does. That was added because its absence hid two real milk-control
   bugs: without uniqueness a double submit duplicated the litres and the test called it
   green. A fake that accepts what Postgres rejects is not an optimistic fake, it is a test
-  that lies — so when a table gains a unique in `db/`, add it there too.
+  that lies — so when a table gains a unique in `db/`, add it there too. It cuts the other
+  way as well: when `db/07` widened `controles_leche`'s unique to include `tipo`, the fake
+  had to widen with it, or the test proving the tank total and the count coexist would have
+  passed against a fake that rejects what Postgres accepts.
   ⚠️ For the same reason it **truncates every response at 1000 rows**, the way PostgREST's
   `max-rows` does: silently, with `error: null`. Without it, a read that forgets `paginar()`
   passes the suite and undercounts in production. The 2500-animal test in
@@ -702,18 +744,17 @@ moves the aggregation into SQL the way `vw_leche_ordeno` does.
 
 ---
 
-*Last updated 2026-08-25: the milk premise was corrected by the founder — the herd is
-measured cow by cow, in both milkings, EVERY day. There is no bulk-total mode, and the
-`db/06` that had been designed around a `tipo` diario/individual was discarded before being
-written. What shipped instead: a **live total** on the control lechero (an inline
-`<script>`, not `'use client'` — the route is still 162 B), and the fix for **task #7**,
-which the daily cadence had just turned from theory into a live undercount:
-`vw_leche_ordeno` (`db/06_leche_agregada.sql`, **APPLY BEFORE DEPLOYING** — it sits inside
-`getAnalytics`'s `Promise.all`, so a missing view degrades the WHOLE dashboard, not just
-the milk section) plus `paginar()` for the five remaining whole-table reads. The fake
-Supabase now truncates at 1000 rows like PostgREST; without that, the unpaginated queries
-tested green. `AUTH_LEGACY_BASIC` is OFF. `GET /api/version` reports the running image.
-287 tests. Next: the animal record drowning in milk rows (#11) → the `foto_url` upload that
+*Last updated 2026-08-25: the milk premise moved twice in one day and landed on TWO
+records per milking — the tank total almost every day, the per-cow count every 2-3 weeks —
+which is the shape the first proposal had and the middle correction had ruled out. Shipped:
+`db/07_produccion_diaria.sql` (**APPLY BEFORE DEPLOYING**, and before `db/06`'s view is
+trusted — `analytics.ts` asks the view for `litros_individual`, and it sits inside
+`getAnalytics`'s `Promise.all`, so a missing column degrades the WHOLE dashboard, not just
+the milk section), the two-mode `/dashboard/leche` with the cuadre between both
+measurements, and `registrarProduccionDiaria()`. Kept from the middle round: the live total
+on the count (an inline `<script>`, not `'use client'` — the route is still 162 B) and the
+close of **task #7** (`paginar()` + the aggregation in SQL). `AUTH_LEGACY_BASIC` is OFF.
+`GET /api/version` reports the running image. 297 tests. Next: the `foto_url` upload that
 Bloque D left open → Fase 3 (the nine flows as forms) → `whatsapp_user_fincas`.*
 *Sections marked 🎯 are decided design, not implemented — verify against code before relying on them.*
 *Full project brief: `docs/README-ganaderia.md` (⚠️ outdated — describes n8n as primary).*

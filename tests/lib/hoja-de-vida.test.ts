@@ -421,7 +421,7 @@ describe('control de leche manual', () => {
   it('repetir el mismo ordeño se rechaza — el doble toque no duplica litros', async () => {
     await control([{ arete: '045', litros: 6 }]);
 
-    await expect(control([{ arete: '045', litros: 6 }])).rejects.toThrow(/ya hay un control/i);
+    await expect(control([{ arete: '045', litros: 6 }])).rejects.toThrow(/ya hay un conteo individual/i);
 
     // Lo que de verdad importa: los litros NO se sumaron dos veces. analytics.ts
     // suma sin mirar nada, así que una fila de más no da ningún síntoma.

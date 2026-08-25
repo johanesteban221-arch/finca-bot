@@ -54,7 +54,7 @@ export type Analytics = {
   };
   leche: {
     hayDatos: boolean;
-    totalLitros30d: number; promLitrosDia: number | null; vacasEnOrdeno: number; promPorVacaDia: number | null;
+    totalLitros30d: number; promLitrosDia: number | null; vacasEnOrdeno: number | null; promPorVacaDia: number | null;
   };
   sanidad: {
     ventanaDias: number;                        // rolling window these figures cover
@@ -101,7 +101,7 @@ export async function getAnalytics(): Promise<Analytics> {
       .select('animal_id, tipo, fecha, resultado')
       .eq('finca_id', FINCA_ID)
       .order('fecha', { ascending: true }).order('id', { ascending: true }).range(d, h), 'eventos_reproductivos'),
-    supabase.from('vw_leche_ordeno').select('fecha, ordeno, litros, vacas')
+    supabase.from('vw_leche_ordeno').select('fecha, ordeno, litros, vacas, litros_individual')
       .eq('finca_id', FINCA_ID).gte('fecha', addDays(-30)),
     paginar<any>((d, h) => supabase.from('eventos_sanitarios')
       .select('animal_id, tipo, fecha, producto, diagnostico')
@@ -250,15 +250,20 @@ export async function getAnalytics(): Promise<Analytics> {
   // el comportamiento correcto mientras la tarde no exista: no se inventa.
   //
   // La vista trae una fila por ordeño; el día se arma juntando sus dos ordeños.
-  const porDia = new Map<string, { litros: number; vacas: number }>();
+  // `litros` ya viene resuelto por la vista: cantina cuando la hay, conteo
+  // individual cuando no (db/07). `vacas` y `litros_individual` son NULL los
+  // días de solo cantina, que son la mayoría.
+  const porDia = new Map<string, { litros: number; vacas: number; individual: number }>();
   for (const o of leche) {
     const litros = Number(o.litros) || 0;
     const vacas = Number(o.vacas) || 0;
+    const individual = Number(o.litros_individual) || 0;
     const dia = porDia.get(o.fecha);
     if (!dia) {
-      porDia.set(o.fecha, { litros, vacas });
+      porDia.set(o.fecha, { litros, vacas, individual });
     } else {
       dia.litros += litros;
+      dia.individual += individual;
       // Las vacas NO se suman entre ordeños: la misma vaca se mide en los dos.
       // El ordeño más numeroso es el tamaño del hato ese día.
       dia.vacas = Math.max(dia.vacas, vacas);
@@ -267,20 +272,25 @@ export async function getAnalytics(): Promise<Analytics> {
   const dias = [...porDia.values()];
   const totalLitros30d = dias.reduce((s, d) => s + d.litros, 0);
   const diasConRegistro = dias.length;
-  // «Vacas en ordeño» = el hato más grande medido en un día del período. Antes
-  // era el número de vacas DISTINTAS vistas en 30 días, que sube con cada vaca
-  // secada a mitad de mes y hundía litros/vaca/día repartiendo entre ordeños que
-  // ya no existen.
-  const vacasEnOrdeno = dias.reduce((m, d) => Math.max(m, d.vacas), 0);
+
+  // Cuántas vacas se ordeñaron solo se sabe los días de CONTEO — el total de
+  // cantina es un número sin desglose. Las dos cifras por vaca salen de esos
+  // días y de nadie más; repartir la cantina entre un número de vacas que nadie
+  // contó ese día sería inventar el divisor.
+  const diasConConteo = dias.filter((d) => d.vacas > 0);
+  const vacasEnOrdeno = diasConConteo.length
+    ? diasConConteo.reduce((m, d) => Math.max(m, d.vacas), 0)
+    : null;
   const lecheData = {
     hayDatos: leche.length > 0,
     totalLitros30d: round(totalLitros30d, 1) || 0,
     promLitrosDia: diasConRegistro ? round(totalLitros30d / diasConRegistro, 1) : null,
     vacasEnOrdeno,
-    // Promedio de los promedios diarios, no total ÷ días ÷ vacas: si el hato
-    // cambió de tamaño dentro del mes, un solo divisor reparte mal.
-    promPorVacaDia: diasConRegistro
-      ? round(dias.reduce((s, d) => s + (d.vacas ? d.litros / d.vacas : 0), 0) / diasConRegistro, 1)
+    // Litros del CONTEO sobre las vacas contadas, y promediando los días: el
+    // instrumento por vaca es el desglose, no la cantina. Promedio de promedios
+    // y no total ÷ días ÷ vacas porque el hato cambia de tamaño dentro del mes.
+    promPorVacaDia: diasConConteo.length
+      ? round(diasConConteo.reduce((s, d) => s + d.individual / d.vacas, 0) / diasConConteo.length, 1)
       : null,
   };
 

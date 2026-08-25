@@ -41,7 +41,9 @@ const MAX_FILAS = 1000;
 
 const UNIQUE: Record<string, string[][]> = {
   produccion_leche: [['animal_id', 'fecha', 'ordeno']],       // uq_leche_animal_fecha_ordeno
-  controles_leche: [['finca_id', 'fecha', 'ordeno']],         // uq_control_finca_fecha_ordeno
+  // Incluye `tipo`: desde db/07 el total de cantina y el conteo individual del
+  // MISMO ordeño conviven, y son dos registros distintos, no un doble envío.
+  controles_leche: [['finca_id', 'fecha', 'ordeno', 'tipo']], // uq_control_finca_fecha_ordeno_tipo
   chequeos_reproductivos: [['animal_id', 'fecha']],           // uq_chequeo_animal_fecha
   protocolo_aplicaciones: [['protocolo_id', 'dia_numero']],   // uq_aplicacion_paso
   usuarios: [['email']],

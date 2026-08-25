@@ -68,11 +68,18 @@ afterEach(() => {
 });
 
 // Una fila por finca, día y ordeño: es lo que devuelve vw_leche_ordeno (db/06).
+// Dos días de CONTEO individual: `litros_individual` y `vacas` vienen llenos.
 const ORDENOS = [
-  { fecha: '2026-08-04', ordeno: 'manana', litros: 120, vacas: 20 },
-  { fecha: '2026-08-04', ordeno: 'tarde', litros: 80, vacas: 20 },
-  { fecha: '2026-08-03', ordeno: 'manana', litros: 110, vacas: 19 },
-  { fecha: '2026-08-03', ordeno: 'tarde', litros: 70, vacas: 18 },
+  { fecha: '2026-08-04', ordeno: 'manana', litros: 120, litros_individual: 120, vacas: 20 },
+  { fecha: '2026-08-04', ordeno: 'tarde', litros: 80, litros_individual: 80, vacas: 20 },
+  { fecha: '2026-08-03', ordeno: 'manana', litros: 110, litros_individual: 110, vacas: 19 },
+  { fecha: '2026-08-03', ordeno: 'tarde', litros: 70, litros_individual: 70, vacas: 18 },
+];
+
+// Un día de solo CANTINA: hay litros, pero no se sabe cuántas vacas los dieron.
+const SOLO_CANTINA = [
+  { fecha: '2026-08-02', ordeno: 'manana', litros: 130, litros_individual: null, vacas: null },
+  { fecha: '2026-08-02', ordeno: 'tarde', litros: 90, litros_individual: null, vacas: null },
 ];
 
 describe('paginación', () => {
@@ -123,10 +130,39 @@ describe('leche', () => {
     expect(a.leche.totalLitros30d).toBe(0);
   });
 
+  it('el día de solo cantina cuenta para el volumen, no para las cifras por vaca', async () => {
+    db = resetDb({ ...seed(), vw_leche_ordeno: [...ORDENOS, ...SOLO_CANTINA] });
+
+    const a = await getAnalytics();
+
+    // El volumen sí lo incluye: esos litros se vendieron.
+    expect(a.leche.totalLitros30d).toBe(600);
+    expect(a.leche.promLitrosDia).toBe(200);
+    // Pero repartir 220 L entre un número de vacas que nadie contó ese día sería
+    // inventar el divisor, así que las dos cifras por vaca lo ignoran.
+    expect(a.leche.vacasEnOrdeno).toBe(20);
+    expect(a.leche.promPorVacaDia).toBe(9.7);
+  });
+
+  it('sin ningún conteo individual, las cifras por vaca son «—» y no 0', async () => {
+    db = resetDb({ ...seed(), vw_leche_ordeno: SOLO_CANTINA });
+
+    const a = await getAnalytics();
+
+    expect(a.leche.totalLitros30d).toBe(220);
+    // Un 0 aquí se leería como «no hay vacas en ordeño», que es falso: lo que no
+    // hay es un conteo.
+    expect(a.leche.vacasEnOrdeno).toBeNull();
+    expect(a.leche.promPorVacaDia).toBeNull();
+  });
+
   it('ignora los ordeños de más de 30 días', async () => {
     db = resetDb({
       ...seed(),
-      vw_leche_ordeno: [...ORDENOS, { fecha: '2026-06-01', ordeno: 'manana', litros: 500, vacas: 25 }],
+      vw_leche_ordeno: [
+        ...ORDENOS,
+        { fecha: '2026-06-01', ordeno: 'manana', litros: 500, litros_individual: 500, vacas: 25 },
+      ],
     });
 
     const a = await getAnalytics();

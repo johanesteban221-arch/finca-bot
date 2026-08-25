@@ -316,6 +316,27 @@ export const controlLeche = z
     { message: 'Hay aretes repetidos en el control.', path: ['mediciones'] },
   );
 
+// Total de CANTINA de un ordeño: un número, sin desglose por vaca. Es lo que se
+// registra casi todos los días; el conteo individual es cada 2-3 semanas y va
+// por `controlLeche`, arriba. Los dos pueden existir para el mismo ordeño — ver
+// db/07: la cantina es lo que se vendió y el desglose cómo se repartió.
+export const produccionDiaria = z.object({
+  fecha,
+  ordeno: z.enum(['manana', 'tarde']),
+  // Tope de absurdo, no de finca: 5000 L en un ordeño son ~330 vacas. No atrapa
+  // el cero de más (4280 por 428); eso lo atrapa la pantalla, que muestra al
+  // lado el último total registrado.
+  litros: z
+    .number()
+    .min(0, 'Los litros no pueden ser negativos.')
+    .max(5000, 'Litros implausibles para un ordeño (máx. 5000).'),
+  // Igual que en el control individual: la identidad la pone el servidor desde
+  // la sesión, nunca el formulario.
+  createdBy: z.uuid('Sesión inválida.').nullable().optional().transform((v) => v ?? null),
+  medidoPor: opcional,
+  notas: opcional,
+});
+
 // ---------------------------------------------------------------------
 // Inferred input types — what callers pass in.
 // ---------------------------------------------------------------------
@@ -337,3 +358,4 @@ export type IaProtocoloInput = z.input<typeof iaProtocolo>;
 export type CerrarProtocoloInput = z.input<typeof cerrarProtocolo>;
 export type CancelarProtocoloInput = z.input<typeof cancelarProtocolo>;
 export type ControlLecheInput = z.input<typeof controlLeche>;
+export type ProduccionDiariaInput = z.input<typeof produccionDiaria>;

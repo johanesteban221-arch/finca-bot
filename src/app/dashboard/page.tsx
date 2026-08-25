@@ -281,35 +281,40 @@ export default async function Dashboard() {
             <Section id="leche" title="Producción de leche" icon="🥛" subtitle="últimos 30 días">
               {a.leche.hayDatos ? (
                 <KpiRow>
-                  {/* Ahora sí es la producción del período: el hato se mide vaca
-                      por vaca en los dos ordeños, todos los días. El rótulo viejo
-                      («Litros medidos», «no del mes») venía de cuando
-                      produccion_leche solo se llenaba cada 2-3 semanas. */}
+                  {/* Las dos primeras salen del volumen del hato (cantina casi
+                      todos los días); las dos últimas solo pueden salir de los
+                      días de conteo individual, que es donde se sabe cuántas
+                      vacas hay detrás del número. Ver db/07. */}
                   <Kpi
                     label="Litros producidos"
                     value={a.leche.totalLitros30d}
                     tono="info"
-                    hint="suma de los ordeños registrados"
+                    hint="cantina; el conteo cuando no hubo cantina"
                   />
                   <Kpi
                     label="Litros / día"
                     value={dash(a.leche.promLitrosDia)}
                     hint="sobre los días con registro"
                   />
-                  <Kpi label="Vacas en ordeño" value={a.leche.vacasEnOrdeno} />
+                  <Kpi
+                    label="Vacas en ordeño"
+                    value={dash(a.leche.vacasEnOrdeno)}
+                    hint="del último conteo individual"
+                  />
                   <Kpi
                     label="Litros / vaca / día"
                     value={dash(a.leche.promPorVacaDia)}
                     tono="campo"
-                    hint="promedio del período"
+                    hint="solo días de conteo"
                   />
                 </KpiRow>
               ) : (
                 <Card>
                   <p className="text-sm text-tierra-500">
-                    Aún no se registra producción de leche. Se llenará con el control lechero —
-                    la medición diaria vaca por vaca con medidor, en los dos ordeños — y,
-                    cuando esté conectada, con la medición automática por hardware (ESP32).
+                    Aún no se registra producción de leche. Se llenará con el total de
+                    cantina de cada ordeño —lo de casi todos los días— y con el conteo
+                    individual vaca por vaca de cada 2 o 3 semanas. Cuando esté conectada,
+                    también con la medición automática por hardware (ESP32).
                   </p>
                 </Card>
               )}

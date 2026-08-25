@@ -1,4 +1,18 @@
-// Control lechero manual: el hato en ordeño pesado en un ordeño concreto.
+// Producción de leche: DOS registros distintos del mismo ordeño.
+//
+//   · registrarProduccionDiaria  — el total de CANTINA. Un número. Es lo que hay
+//     casi todos los días. Va solo a `controles_leche` (tipo='diario',
+//     litros_total) y NUNCA escribe en produccion_leche: esa tabla es por
+//     animal, y un total del hato no tiene animal.
+//   · registrarControlLeche      — el conteo INDIVIDUAL, vaca por vaca, cada 2-3
+//     semanas. Cabecera en `controles_leche` (tipo='individual', litros_total
+//     NULL) y detalle en produccion_leche.
+//
+// Los dos pueden existir para el mismo ordeño: la cantina es lo que se vendió y
+// el desglose cómo se repartió entre las vacas. Su diferencia es el cuadre. Ver
+// db/07_produccion_diaria.sql.
+//
+// Control lechero individual: el hato en ordeño pesado en un ordeño concreto.
 //
 // Un control es de UN ordeño, no de un día. Antes era uno por día con columnas
 // de mañana y tarde, y eso hacía imposible el uso real: la mañana se pesa a las
@@ -11,9 +25,10 @@
 // (analytics.ts lee produccion_leche), partiría la línea de tiempo del animal en
 // dos y dejaría el control fuera de vw_respaldo_completo.
 //
-// ⚠️ EL TOTAL NO SE GUARDA. Mañana → ordeno='manana', tarde → 'tarde', y el total
-// se deriva sumando. analytics.ts suma `litros` de TODAS las filas sin mirar
-// `ordeno`, así que una tercera fila 'total' duplicaría la producción del hato.
+// ⚠️ EL TOTAL DEL CONTEO NO SE GUARDA. Mañana → ordeno='manana', tarde →
+// 'tarde', y el total del conteo se deriva sumando: por eso `litros_total` es
+// NULL en las cabeceras tipo='individual'. El `litros_total` con número es otra
+// cosa —la cantina— y viene por la otra función.
 
 import { supabase } from '../supabase';
 import { FINCA_ID } from '../tenant';
@@ -28,11 +43,22 @@ export type ControlLecheResult = {
   totalLitros: number;
 };
 
-/** Se lanza cuando ese ordeño de ese día ya está registrado. */
+/**
+ * Se lanza cuando ESE registro de ese ordeño ya existe.
+ *
+ * Nombra el tipo porque desde db/07 los dos conviven: decirle «ya está
+ * registrado» a quien acaba de teclear el total, cuando lo que hay guardado es
+ * el conteo individual, lo mandaría a borrar el dato bueno.
+ */
 export class ControlDuplicado extends Error {
-  constructor(readonly fecha: string, readonly ordeno: string) {
+  constructor(
+    readonly fecha: string,
+    readonly ordeno: string,
+    readonly tipo: 'diario' | 'individual' = 'individual',
+  ) {
+    const cual = tipo === 'diario' ? 'total de cantina' : 'conteo individual';
     super(
-      `Ya hay un control de la ${ordeno === 'manana' ? 'mañana' : 'tarde'} del ${fecha}. ` +
+      `Ya hay un ${cual} de la ${ordeno === 'manana' ? 'mañana' : 'tarde'} del ${fecha}. ` +
         'Si necesita corregirlo, hay que borrarlo primero.',
     );
     this.name = 'ControlDuplicado';
@@ -79,6 +105,9 @@ export async function registrarControlLeche(input: S.ControlLecheInput): Promise
       finca_id: FINCA_ID,
       fecha: d.fecha,
       ordeno: d.ordeno,
+      // Explícito y no por DEFAULT, igual que finca_id: el default de la columna
+      // es una red de seguridad del esquema, no el contrato de la aplicación.
+      tipo: 'individual',
       // created_by es la FK autoritativa; medido_por es la copia del nombre, que
       // sigue sirviendo si algún día se borra la cuenta del operario.
       created_by: d.createdBy,
@@ -89,7 +118,7 @@ export async function registrarControlLeche(input: S.ControlLecheInput): Promise
     .single();
 
   if (controlError || !control?.id) {
-    if (esDuplicado(controlError?.message)) throw new ControlDuplicado(d.fecha, d.ordeno);
+    if (esDuplicado(controlError?.message)) throw new ControlDuplicado(d.fecha, d.ordeno, 'individual');
     throw new Error(`registrar control de leche: ${controlError?.message ?? 'sin id devuelto'}`);
   }
 
@@ -106,10 +135,10 @@ export async function registrarControlLeche(input: S.ControlLecheInput): Promise
   const { error: filasError } = await supabase.from('produccion_leche').insert(filas);
   if (filasError) {
     // Borrado compensatorio: sin transacción, un detalle fallido dejaría una
-    // cabecera huérfana, y uq_control_finca_fecha_ordeno rechazaría después todo
-    // reintento de ese ordeño — el control no se podría volver a capturar nunca.
+    // cabecera huérfana, y uq_control_finca_fecha_ordeno_tipo rechazaría después
+    // todo reintento de ese conteo — no se podría volver a capturar nunca.
     await supabase.from('controles_leche').delete().eq('id', control.id);
-    if (esDuplicado(filasError.message)) throw new ControlDuplicado(d.fecha, d.ordeno);
+    if (esDuplicado(filasError.message)) throw new ControlDuplicado(d.fecha, d.ordeno, 'individual');
     throw new Error(`registrar mediciones del control: ${filasError.message}`);
   }
 
@@ -119,5 +148,57 @@ export async function registrarControlLeche(input: S.ControlLecheInput): Promise
     ordeno: d.ordeno,
     vacas: filas.length,
     totalLitros: Math.round(filas.reduce((s, r) => s + r.litros, 0) * 10) / 10,
+  };
+}
+
+export type ProduccionDiariaResult = {
+  controlId: string;
+  fecha: string;
+  ordeno: 'manana' | 'tarde';
+  litros: number;
+};
+
+/**
+ * El total de CANTINA de un ordeño. Un número, sin desglose.
+ *
+ * Es el registro de casi todos los días. Escribe UNA fila en `controles_leche`
+ * con tipo='diario' y `litros_total`, y **ni una** en `produccion_leche`: esa
+ * tabla es por animal y un total del hato no tiene animal. Meterlo ahí exigiría
+ * una vaca fantasma tipo «CANTINA» que saldría en el inventario, en la
+ * genealogía y en el listado de ordeño.
+ *
+ * No choca con el conteo individual del mismo ordeño — desde db/07 la unicidad
+ * incluye `tipo`, y que los dos convivan es lo que permite cuadrarlos.
+ */
+export async function registrarProduccionDiaria(
+  input: S.ProduccionDiariaInput,
+): Promise<ProduccionDiariaResult> {
+  const d = S.produccionDiaria.parse(input);
+
+  const { data: control, error } = await supabase
+    .from('controles_leche')
+    .insert({
+      finca_id: FINCA_ID,
+      fecha: d.fecha,
+      ordeno: d.ordeno,
+      tipo: 'diario',
+      litros_total: d.litros,
+      created_by: d.createdBy,
+      medido_por: d.medidoPor,
+      notas: d.notas,
+    })
+    .select('id')
+    .single();
+
+  if (error || !control?.id) {
+    if (esDuplicado(error?.message)) throw new ControlDuplicado(d.fecha, d.ordeno, 'diario');
+    throw new Error(`registrar total del ordeño: ${error?.message ?? 'sin id devuelto'}`);
+  }
+
+  return {
+    controlId: control.id,
+    fecha: d.fecha,
+    ordeno: d.ordeno,
+    litros: d.litros,
   };
 }

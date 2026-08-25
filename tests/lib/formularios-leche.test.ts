@@ -49,7 +49,7 @@ vi.mock('next/navigation', async () => {
 
 vi.mock('next/cache', () => ({ revalidatePath: () => {} }));
 
-import { registrarControlAction } from '../../src/app/dashboard/leche/actions';
+import { registrarControlAction, registrarTotalAction } from '../../src/app/dashboard/leche/actions';
 import ControlLeche from '../../src/app/dashboard/leche/page';
 import { numeroOpcional, opcionDe, texto, CampoInvalido, mensajeDeError } from '../../src/lib/forms';
 import { resetDb } from '../helpers/db';
@@ -154,7 +154,7 @@ describe('control lechero — escritura', () => {
     const url = await enviar({ 'l:045': '8' });
 
     expect(url).toContain('error=');
-    expect(url).toMatch(/ya hay un control/i);
+    expect(url).toMatch(/ya hay un conteo individual/i);
     // Lo que importa: los litros no se sumaron dos veces. analytics.ts suma sin
     // mirar nada, así que una fila de más no daría ningún síntoma.
     expect(db.rows('produccion_leche')).toHaveLength(1);
@@ -222,14 +222,132 @@ describe('control lechero — escritura', () => {
 });
 
 // =====================================================================
-describe('control lechero — pantalla', () => {
-  const render = async (params: any = {}) =>
+// =====================================================================
+describe('total de cantina — escritura', () => {
+  const enviar = (campos: Record<string, string>) =>
+    correr(registrarTotalAction, form({ fecha: TODAY, ordeno: 'manana', ...campos }));
+
+  it('guarda una cabecera tipo=diario con el total, y NADA por vaca', async () => {
+    const url = await enviar({ litros: '428.5' });
+
+    expect(url).toContain('ok=');
+    expect(db.rows('controles_leche')[0]).toMatchObject({
+      finca_id: FINCA_ID,
+      fecha: TODAY,
+      ordeno: 'manana',
+      tipo: 'diario',
+      litros_total: 428.5,
+    });
+    // Lo que separa los dos modos, en una línea: la cantina no tiene vacas, y
+    // produccion_leche es por animal. Una fila aquí exigiría un animal fantasma.
+    expect(db.rows('produccion_leche')).toHaveLength(0);
+  });
+
+  it('la casilla vacía se rechaza: «no tengo el dato» no es «dio cero»', async () => {
+    const url = await enviar({ litros: '' });
+
+    expect(url).toContain('error=');
+    // Guardar un 0 por ella metería un día de producción nula en la serie.
+    expect(db.rows('controles_leche')).toHaveLength(0);
+  });
+
+  it('el total y el conteo del mismo ordeño conviven', async () => {
+    // El caso normal cada 2-3 semanas, y la razón de que la unicidad incluya
+    // `tipo` (db/07). Si se rechazaran entre sí, no habría cuadre posible.
+    await enviar({ litros: '400' });
+    const url = await correr(
+      registrarControlAction,
+      form({ fecha: TODAY, ordeno: 'manana', 'l:045': '8', 'l:077': '4.5' }),
+    );
+
+    expect(url).toContain('ok=');
+    expect(db.rows('controles_leche').map((c) => c.tipo).sort()).toEqual(['diario', 'individual']);
+  });
+
+  it('repetir el total del mismo ordeño se rechaza — el doble toque no duplica', async () => {
+    await enviar({ litros: '400' });
+    const url = await enviar({ litros: '400' });
+
+    expect(url).toContain('error=');
+    expect(url).toMatch(/ya hay un total de cantina/i);
+    expect(db.rows('controles_leche')).toHaveLength(1);
+  });
+
+  it('la identidad sale de la sesión, no del formulario', async () => {
+    await enviar({ litros: '400', medidoPor: 'El Zorro', createdBy: 'lo-que-sea' });
+
+    expect(db.rows('controles_leche')[0]).toMatchObject({
+      created_by: DUENO.id,
+      medido_por: DUENO.nombre,
+    });
+  });
+
+  it('el veterinario no puede registrarlo — no opera el ordeño', async () => {
+    comoRol('veterinario');
+    const url = await enviar({ litros: '400' });
+
+    expect(url).toContain('error=');
+    expect(db.rows('controles_leche')).toHaveLength(0);
+  });
+});
+
+describe('pantalla — los dos modos', () => {
+  // Sin forzar `modo`: es lo que ve el operario al entrar.
+  const renderCrudo = async (params: any = {}) =>
     renderToStaticMarkup(await ControlLeche({ searchParams: Promise.resolve(params) }));
+
+  it('abre en «Registrar total» y ni siquiera trae el hato', async () => {
+    const html = await renderCrudo();
+
+    expect(html).toContain('Registrar total');
+    expect(html).toContain('Control individual');
+    // El modo de todos los días es el total. Cargar cuarenta vacas para no
+    // pintarlas es una consulta al pedo en una pantalla de mala señal.
+    expect(html).not.toContain('l:045');
+    expect(html).toContain('name="litros"');
+  });
+
+  it('el cuadre aparece solo cuando el ordeño tiene las dos mediciones', async () => {
+    db.rows('controles_leche').push(
+      {
+        id: 'c-cantina', finca_id: FINCA_ID, fecha: TODAY, ordeno: 'manana',
+        tipo: 'diario', litros_total: 20, medido_por: 'Johan', created_by: DUENO.id,
+        notas: null, created_at: '2026-08-04T11:42:00.000Z',
+      },
+      {
+        id: 'c-conteo', finca_id: FINCA_ID, fecha: TODAY, ordeno: 'manana',
+        tipo: 'individual', litros_total: null, medido_por: 'Johan', created_by: DUENO.id,
+        notas: null, created_at: '2026-08-04T12:00:00.000Z',
+      },
+    );
+    db.rows('produccion_leche').push(
+      { id: 'p1', finca_id: FINCA_ID, animal_id: 'a1', fecha: TODAY, ordeno: 'manana', litros: 8, control_id: 'c-conteo', fuente: 'control' },
+      { id: 'p2', finca_id: FINCA_ID, animal_id: 'a2', fecha: TODAY, ordeno: 'manana', litros: 4.5, control_id: 'c-conteo', fuente: 'control' },
+    );
+
+    const html = await renderCrudo({ ordeno: 'manana' });
+
+    // 20 L de cantina contra 12.5 L de conteo: faltan 7.5 L por explicar, que es
+    // exactamente el dato que justifica que los dos registros convivan.
+    expect(html).toContain('Cuadre de este ordeño');
+    expect(html).toContain('7.5 L');
+    // Con un solo registro no hay nada que cuadrar.
+    expect(await renderCrudo({ ordeno: 'tarde' })).not.toContain('Cuadre de este ordeño');
+  });
+});
+
+describe('control lechero — pantalla', () => {
+  // `modo: 'individual'` explícito: la pantalla abre en el total de cantina, que
+  // es lo de todos los días. Estos casos son del conteo vaca por vaca.
+  const render = async (params: any = {}) =>
+    renderToStaticMarkup(
+      await ControlLeche({ searchParams: Promise.resolve({ modo: 'individual', ...params }) }),
+    );
 
   const sembrarControl = () => {
     db.rows('controles_leche').push({
-      id: 'c1', finca_id: FINCA_ID, fecha: TODAY, ordeno: 'manana',
-      medido_por: 'Johan', created_by: DUENO.id, notas: null,
+      id: 'c1', finca_id: FINCA_ID, fecha: TODAY, ordeno: 'manana', tipo: 'individual',
+      litros_total: null, medido_por: 'Johan', created_by: DUENO.id, notas: null,
       created_at: '2026-08-04T11:42:00.000Z', // 6:42 a. m. en la finca (UTC-5)
     });
     db.rows('produccion_leche').push(
@@ -273,11 +391,16 @@ describe('control lechero — pantalla', () => {
     expect(html).toContain('6:42');
   });
 
-  it('avisa cuando ese ordeño ya está registrado', async () => {
+  it('avisa cuando ese ordeño ya tiene conteo, y dice cuál de los dos registros es', async () => {
     sembrarControl();
 
-    expect(await render({ ordeno: 'manana' })).toContain('ya está registrado');
-    expect(await render({ ordeno: 'tarde' })).not.toContain('ya está registrado');
+    // Nombrar el tipo importa: decirle «ya está registrado» a quien viene a
+    // teclear el total, cuando lo guardado es el conteo, lo mandaría a borrar el
+    // dato bueno.
+    expect(await render({ ordeno: 'manana' })).toMatch(/Ya hay un conteo individual/);
+    expect(await render({ ordeno: 'tarde' })).not.toMatch(/Ya hay un conteo/);
+    // Y el aviso es POR MODO: el total de ese mismo ordeño sigue sin registrarse.
+    expect(await render({ modo: 'total', ordeno: 'manana' })).not.toMatch(/Ya hay un total/);
   });
 
   // El total en vivo. Se pinta con un <script> inline, no con un componente de
