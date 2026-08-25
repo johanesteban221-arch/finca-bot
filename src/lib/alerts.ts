@@ -134,10 +134,17 @@ export async function getRechequeosPendientes(): Promise<Rechequeo[]> {
 }
 
 // Cows served > PRENEZ_DIAS days ago that are still 'servida' (need a pregnancy check).
+//
+// ⚠️ El embed lleva la pista `!animal_id` y no puede perderla. `eventos_reproductivos`
+// apunta a `animales` por TRES caminos — animal_id (la vaca), toro_id (el toro del
+// servicio) y cria_id (la cría del parto) — así que un `animales(...)` a secas es
+// ambiguo y PostgREST responde "more than one relationship was found" en vez de
+// devolver filas. Aquí la vaca servida es SIEMPRE animal_id: por toro_id saldría el
+// toro, que nunca está 'servida', y la alerta callaría sin dar error.
 export async function getPrenezPendientes(): Promise<string[]> {
   const res = await supabase
     .from('eventos_reproductivos')
-    .select('fecha, animales!inner(arete, estado_reproductivo)')
+    .select('fecha, animales!animal_id!inner(arete, estado_reproductivo)')
     .eq('finca_id', FINCA_ID)
     .eq('tipo', 'servicio')
     .lte('fecha', shift(-PRENEZ_DIAS))
