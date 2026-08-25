@@ -46,6 +46,24 @@ En la app de Meta (Ganaderia) → WhatsApp → Configuración → **Webhooks**:
 ## 7. Actualizaciones
 `git push` a `main` → Easypanel redepliega (si activaste auto-deploy) o pulsa **Deploy**.
 
+**¿Ya está arriba mi commit?** `GET https://<tu-dominio>/api/version`:
+
+```json
+{ "sha": "desconocido", "construidoEn": "2026-08-25T01:56:11Z",
+  "arrancadoEn": "2026-08-25T02:03:44Z", "ahora": "..." }
+```
+
+- `construidoEn` es lo que responde la pregunta, y **no necesita configurarse**: lo
+  estampa el propio build de Docker. Si es posterior a tu push, tu código está corriendo.
+- `arrancadoEn` es cuándo arrancó este contenedor. `construidoEn` viejo +
+  `arrancadoEn` reciente = se reinició el contenedor, **no** se desplegó nada nuevo.
+- `sha` sale `desconocido` mientras nadie pase el build arg. Para llenarlo, en
+  Easypanel → Build → **Build args**: `GIT_SHA=<hash>`. Es opcional; hay que
+  actualizarlo a mano en cada despliegue, y `construidoEn` ya basta para lo de siempre.
+
+El endpoint es público y solo devuelve esos cuatro campos. Si prefieres cerrarlo,
+protégelo con `?secret=CRON_SECRET` igual que los crons.
+
 ## 8. Primer ingreso al tablero con usuarios y roles (Fase 2)
 El tablero entra con correo y contraseña (Supabase Auth). El primer dueño no
 puede crearse a sí mismo, así que hay una puerta de arranque. **En este orden:**

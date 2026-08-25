@@ -15,6 +15,18 @@ COPY . .
 # Build-time placeholders so `next build` never fails on missing envs.
 # Real values are injected at runtime by Easypanel (see Environment).
 ENV NEXT_TELEMETRY_DISABLED=1
+
+# Stamp the image with its identity, read back by GET /api/version.
+# `.dockerignore` excludes `.git`, so the SHA cannot be discovered here — it has
+# to be passed in (`--build-arg GIT_SHA=...`). The timestamp does not depend on
+# that: it is generated here, so the endpoint answers "is my deploy live?" even
+# when GIT_SHA is never wired up. This runs after `COPY . .` on purpose — any
+# source change busts the cache above it, so the stamp is never stale for a real
+# code change.
+ARG GIT_SHA=desconocido
+RUN printf 'export const BUILD_INFO = {\n  sha: "%s",\n  construidoEn: "%s",\n} as const;\n' \
+      "$GIT_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > src/lib/build-info.ts
+
 RUN npm run build
 
 # 3) Runtime
