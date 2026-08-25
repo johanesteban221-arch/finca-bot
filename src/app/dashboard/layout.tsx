@@ -37,6 +37,7 @@ const SECCIONES = [
 // un POST a mano. El guardia de verdad está en cada página y en cada acción.
 const FORMULARIOS: { href: string; label: string; Icon: typeof Users; permiso: Permiso }[] = [
   { href: '/dashboard/leche', label: 'Control lechero', Icon: Milk, permiso: 'leche.registrar' },
+  { href: '/dashboard/chequeos', label: 'Chequeo repro.', Icon: Stethoscope, permiso: 'chequeo.registrar' },
 ];
 
 const USUARIOS = { href: '/dashboard/usuarios', label: 'Usuarios', Icon: Users };
