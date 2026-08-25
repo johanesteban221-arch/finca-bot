@@ -21,7 +21,7 @@ const CON_FINCA = new Set([
   'produccion_leche', 'movimientos', 'confirmaciones_pendientes',
   'chequeos_reproductivos', 'protocolos_sincronizacion', 'protocolo_aplicaciones',
   'controles_leche', 'usuario_fincas',
-  'vw_historial_animal', 'vw_genealogia', 'vw_alertas',
+  'vw_historial_animal', 'vw_genealogia', 'vw_alertas', 'vw_leche_ordeno',
 ]);
 
 const conFincaPorDefecto = (tabla: string, rows: Row[]): Row[] =>

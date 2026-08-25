@@ -281,22 +281,27 @@ export default async function Dashboard() {
             <Section id="leche" title="Producción de leche" icon="🥛" subtitle="últimos 30 días">
               {a.leche.hayDatos ? (
                 <KpiRow>
-                  {/* No es la producción del mes: produccion_leche se llena hoy con
-                      controles lecheros — el hato completo, un día cada 2 o 3 semanas —
-                      así que el total suma solo esos días. */}
+                  {/* Ahora sí es la producción del período: el hato se mide vaca
+                      por vaca en los dos ordeños, todos los días. El rótulo viejo
+                      («Litros medidos», «no del mes») venía de cuando
+                      produccion_leche solo se llenaba cada 2-3 semanas. */}
                   <Kpi
-                    label="Litros medidos"
+                    label="Litros producidos"
                     value={a.leche.totalLitros30d}
                     tono="info"
-                    hint="suma de los días de control, no del mes"
+                    hint="suma de los ordeños registrados"
                   />
-                  <Kpi label="Litros / día de control" value={dash(a.leche.promLitrosDia)} />
+                  <Kpi
+                    label="Litros / día"
+                    value={dash(a.leche.promLitrosDia)}
+                    hint="sobre los días con registro"
+                  />
                   <Kpi label="Vacas en ordeño" value={a.leche.vacasEnOrdeno} />
                   <Kpi
                     label="Litros / vaca / día"
                     value={dash(a.leche.promPorVacaDia)}
                     tono="campo"
-                    hint="promedio en los días medidos"
+                    hint="promedio del período"
                   />
                 </KpiRow>
               ) : (

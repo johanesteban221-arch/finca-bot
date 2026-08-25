@@ -1,4 +1,4 @@
-import { supabase, unwrapList } from './supabase';
+import { supabase, unwrapList, paginar } from './supabase';
 import { FINCA_ID } from './tenant';
 import { today, addDays, shiftDate, daysBetween } from './dates';
 
@@ -75,21 +75,44 @@ export type Analytics = {
 export async function getAnalytics(): Promise<Analytics> {
   // Todas filtran por finca_id explícitamente. RLS está dormida bajo service_role,
   // así que este .eq() ES el aislamiento entre fincas — no un respaldo de otro.
-  const [aRes, pRes, rRes, lRes, sRes, mRes] = await Promise.all([
-    supabase.from('animales').select('id, arete, sexo, categoria, estado, estado_reproductivo').eq('finca_id', FINCA_ID),
-    supabase.from('pesajes').select('animal_id, fecha, peso_kg, tipo').eq('finca_id', FINCA_ID).order('fecha', { ascending: true }),
-    supabase.from('eventos_reproductivos').select('animal_id, tipo, fecha, resultado').eq('finca_id', FINCA_ID).order('fecha', { ascending: true }),
-    supabase.from('produccion_leche').select('animal_id, fecha, litros').eq('finca_id', FINCA_ID).gte('fecha', addDays(-30)),
-    supabase.from('eventos_sanitarios').select('animal_id, tipo, fecha, producto, diagnostico').eq('finca_id', FINCA_ID).gte('fecha', addDays(-SANIDAD_DIAS)),
-    supabase.from('movimientos').select('animal_id, fecha, notas').eq('finca_id', FINCA_ID).eq('tipo', 'muerte'),
-  ]);
+  //
+  // Y todas menos la de leche van por `paginar`: PostgREST corta en 1000 filas
+  // sin avisar y estas se agregan en memoria, así que sin paginar el tablero
+  // mostraría promedios calculados sobre datos truncados. Cada orden termina en
+  // `id` como desempate — sin él, dos filas de la misma fecha pueden cruzarse
+  // entre páginas y una se repite mientras otra se pierde.
+  //
+  // La de leche NO se pagina porque ya no trae filas crudas: vw_leche_ordeno
+  // (db/06) agrega en Postgres y devuelve DOS filas por día en vez de una por
+  // vaca y ordeño. Con medición diaria eso son ~60 filas en 30 días contra las
+  // 1200+ de antes, que es lo que estaba a punto de pasarse del tope.
+  //
   // A failed query must not read as "no hay datos" — see unwrapList.
-  const animales = unwrapList<any>(aRes, 'animales');
-  const pesajes = unwrapList<any>(pRes, 'pesajes');
-  const repro = unwrapList<any>(rRes, 'eventos_reproductivos');
-  const leche = unwrapList<any>(lRes, 'produccion_leche');
-  const sanitarios = unwrapList<any>(sRes, 'eventos_sanitarios');
-  const muertes = unwrapList<any>(mRes, 'movimientos');
+  const [animales, pesajes, repro, lRes, sanitarios, muertes] = await Promise.all([
+    paginar<any>((d, h) => supabase.from('animales')
+      .select('id, arete, sexo, categoria, estado, estado_reproductivo')
+      .eq('finca_id', FINCA_ID)
+      .order('id', { ascending: true }).range(d, h), 'animales'),
+    paginar<any>((d, h) => supabase.from('pesajes')
+      .select('animal_id, fecha, peso_kg, tipo')
+      .eq('finca_id', FINCA_ID)
+      .order('fecha', { ascending: true }).order('id', { ascending: true }).range(d, h), 'pesajes'),
+    paginar<any>((d, h) => supabase.from('eventos_reproductivos')
+      .select('animal_id, tipo, fecha, resultado')
+      .eq('finca_id', FINCA_ID)
+      .order('fecha', { ascending: true }).order('id', { ascending: true }).range(d, h), 'eventos_reproductivos'),
+    supabase.from('vw_leche_ordeno').select('fecha, ordeno, litros, vacas')
+      .eq('finca_id', FINCA_ID).gte('fecha', addDays(-30)),
+    paginar<any>((d, h) => supabase.from('eventos_sanitarios')
+      .select('animal_id, tipo, fecha, producto, diagnostico')
+      .eq('finca_id', FINCA_ID).gte('fecha', addDays(-SANIDAD_DIAS))
+      .order('fecha', { ascending: true }).order('id', { ascending: true }).range(d, h), 'eventos_sanitarios'),
+    paginar<any>((d, h) => supabase.from('movimientos')
+      .select('animal_id, fecha, notas')
+      .eq('finca_id', FINCA_ID).eq('tipo', 'muerte')
+      .order('fecha', { ascending: true }).order('id', { ascending: true }).range(d, h), 'movimientos'),
+  ]);
+  const leche = unwrapList<any>(lRes, 'vw_leche_ordeno');
 
   const areteOf = new Map<string, string>();
   const catOf = new Map<string, string>();
@@ -212,22 +235,53 @@ export async function getAnalytics(): Promise<Analytics> {
   };
 
   // ---------- Leche (últimos 30 días) ----------
-  // ⚠️ Estas cifras cambian de significado ahora que produccion_leche tiene
-  // escritor (controles de leche cada 2-3 semanas, no registro diario):
-  //   · promLitrosDia y promPorVacaDia siguen siendo correctos — dividen entre
-  //     los días CON registro, y un control mide el hato completo en un día.
-  //   · totalLitros30d ya no es la producción del mes, sino la suma de los días
-  //     de control. El nombre del campo se conserva; el tablero lo rotula
-  //     "Litros medidos" y aclara en el hint que no es el mes (Bloque B).
-  const totalLitros30d = leche.reduce((s, r) => s + Number(r.litros || 0), 0);
-  const diasConRegistro = new Set(leche.map((r) => r.fecha)).size;
-  const vacasEnOrdeno = new Set(leche.map((r) => r.animal_id)).size;
+  // El hato se mide vaca por vaca con medidor, en los DOS ordeños, TODOS los
+  // días: no hay pesaje periódico ni reporte de total aparte — el total del
+  // ordeño es la suma del desglose. Por eso estas tres cifras son literales:
+  // totalLitros30d ES la producción del período, y no «la suma de los días de
+  // control» como cuando produccion_leche solo se llenaba cada 2-3 semanas.
+  //
+  // ⚠️ Con esa frecuencia, la consulta de arriba se acerca al tope de filas de
+  // PostgREST (~1000 por defecto): 20 vacas × 2 ordeños × 30 días = 1200. Pasado
+  // el tope, esto suma datos TRUNCADOS sin ningún síntoma. Es la tarea #7 de
+  // CLAUDE.md y con el registro diario dejó de ser teórica.
+  //
+  // Un día a medias (solo la mañana registrada) baja el promedio por día, que es
+  // el comportamiento correcto mientras la tarde no exista: no se inventa.
+  //
+  // La vista trae una fila por ordeño; el día se arma juntando sus dos ordeños.
+  const porDia = new Map<string, { litros: number; vacas: number }>();
+  for (const o of leche) {
+    const litros = Number(o.litros) || 0;
+    const vacas = Number(o.vacas) || 0;
+    const dia = porDia.get(o.fecha);
+    if (!dia) {
+      porDia.set(o.fecha, { litros, vacas });
+    } else {
+      dia.litros += litros;
+      // Las vacas NO se suman entre ordeños: la misma vaca se mide en los dos.
+      // El ordeño más numeroso es el tamaño del hato ese día.
+      dia.vacas = Math.max(dia.vacas, vacas);
+    }
+  }
+  const dias = [...porDia.values()];
+  const totalLitros30d = dias.reduce((s, d) => s + d.litros, 0);
+  const diasConRegistro = dias.length;
+  // «Vacas en ordeño» = el hato más grande medido en un día del período. Antes
+  // era el número de vacas DISTINTAS vistas en 30 días, que sube con cada vaca
+  // secada a mitad de mes y hundía litros/vaca/día repartiendo entre ordeños que
+  // ya no existen.
+  const vacasEnOrdeno = dias.reduce((m, d) => Math.max(m, d.vacas), 0);
   const lecheData = {
     hayDatos: leche.length > 0,
     totalLitros30d: round(totalLitros30d, 1) || 0,
     promLitrosDia: diasConRegistro ? round(totalLitros30d / diasConRegistro, 1) : null,
     vacasEnOrdeno,
-    promPorVacaDia: vacasEnOrdeno && diasConRegistro ? round(totalLitros30d / diasConRegistro / vacasEnOrdeno, 1) : null,
+    // Promedio de los promedios diarios, no total ÷ días ÷ vacas: si el hato
+    // cambió de tamaño dentro del mes, un solo divisor reparte mal.
+    promPorVacaDia: diasConRegistro
+      ? round(dias.reduce((s, d) => s + (d.vacas ? d.litros / d.vacas : 0), 0) / diasConRegistro, 1)
+      : null,
   };
 
   // ---------- Sanidad (ventana móvil de SANIDAD_DIAS) ----------

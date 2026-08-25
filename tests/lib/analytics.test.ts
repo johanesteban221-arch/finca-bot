@@ -12,7 +12,7 @@ vi.mock('../../src/lib/supabase', async () => {
 import { getAnalytics } from '../../src/lib/analytics';
 import { resetDb } from '../helpers/db';
 import type { FakeSupabase } from '../helpers/fake-supabase';
-import { NOW } from '../helpers/harness';
+import { NOW, TODAY } from '../helpers/harness';
 
 let db: FakeSupabase;
 
@@ -51,7 +51,7 @@ function seed() {
     animales: ANIMALES,
     pesajes: [],
     eventos_reproductivos: [],
-    produccion_leche: [],
+    vw_leche_ordeno: [],
     eventos_sanitarios: SANITARIOS,
     movimientos: MOVIMIENTOS,
   };
@@ -65,6 +65,75 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+// Una fila por finca, día y ordeño: es lo que devuelve vw_leche_ordeno (db/06).
+const ORDENOS = [
+  { fecha: '2026-08-04', ordeno: 'manana', litros: 120, vacas: 20 },
+  { fecha: '2026-08-04', ordeno: 'tarde', litros: 80, vacas: 20 },
+  { fecha: '2026-08-03', ordeno: 'manana', litros: 110, vacas: 19 },
+  { fecha: '2026-08-03', ordeno: 'tarde', litros: 70, vacas: 18 },
+];
+
+describe('paginación', () => {
+  // El hato se mide vaca por vaca en los dos ordeños TODOS los días, así que las
+  // consultas del tablero pasaron a moverse en miles de filas. PostgREST corta
+  // en 1000 sin avisar (el fake lo simula), y agregar sobre lo truncado da un
+  // número más bajo que el real sin ningún síntoma.
+  it('trae el hato completo aunque pase del tope de filas de PostgREST', async () => {
+    const muchos = Array.from({ length: 2500 }, (_, i) => ({
+      id: `x${String(i).padStart(5, '0')}`,
+      arete: String(1000 + i),
+      sexo: 'H', categoria: 'vaca', estado: 'activo', estado_reproductivo: 'vacia',
+    }));
+    db = resetDb({ ...seed(), animales: muchos });
+
+    const a = await getAnalytics();
+
+    // Sin paginar esto daba 1000 y el tablero lo mostraba como el hato entero.
+    expect(a.inventario.activos).toBe(2500);
+  });
+});
+
+describe('leche', () => {
+  it('suma los dos ordeños del día sin contar dos veces a la misma vaca', async () => {
+    db = resetDb({ ...seed(), vw_leche_ordeno: ORDENOS });
+
+    const a = await getAnalytics();
+
+    expect(a.leche.totalLitros30d).toBe(380);
+    expect(a.leche.promLitrosDia).toBe(190);
+    // 40 sería sumar las vacas de la mañana con las de la tarde: son las mismas.
+    expect(a.leche.vacasEnOrdeno).toBe(20);
+    // Promedio de los promedios diarios: 200/20 y 180/19.
+    expect(a.leche.promPorVacaDia).toBe(9.7);
+  });
+
+  it('la leche sale de la vista agregada, no de las filas crudas', async () => {
+    db = resetDb({
+      ...seed(),
+      produccion_leche: [{ animal_id: 'a1', fecha: TODAY, ordeno: 'manana', litros: 999 }],
+    });
+
+    const a = await getAnalytics();
+
+    // Si alguien vuelve a leer produccion_leche directo, esto salta: con medición
+    // diaria son 1200+ filas al mes y PostgREST las corta en silencio (db/06).
+    expect(a.leche.hayDatos).toBe(false);
+    expect(a.leche.totalLitros30d).toBe(0);
+  });
+
+  it('ignora los ordeños de más de 30 días', async () => {
+    db = resetDb({
+      ...seed(),
+      vw_leche_ordeno: [...ORDENOS, { fecha: '2026-06-01', ordeno: 'manana', litros: 500, vacas: 25 }],
+    });
+
+    const a = await getAnalytics();
+
+    expect(a.leche.totalLitros30d).toBe(380);
+    expect(a.leche.vacasEnOrdeno).toBe(20);
+  });
 });
 
 describe('sanidad', () => {
@@ -144,7 +213,7 @@ describe('error propagation', () => {
     'animales',
     'pesajes',
     'eventos_reproductivos',
-    'produccion_leche',
+    'vw_leche_ordeno',
     'eventos_sanitarios',
     'movimientos',
   ])('throws instead of reporting empty data when %s fails', async (tabla) => {

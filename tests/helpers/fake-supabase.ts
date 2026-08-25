@@ -33,6 +33,12 @@ const PRIMARY_KEYS: Record<string, string> = {
 // sin unicidad, un doble envío duplicaba los litros y el test lo daba por bueno.
 // Un fake que acepta lo que Postgres rechaza no es un fake optimista, es un test
 // que miente. Cuando una tabla gane un unique en db/, va también aquí.
+// PostgREST corta TODA respuesta en `max-rows` — 1000 por defecto en Supabase —
+// y no lo dice: llegan 1000 filas con `error: null`, idénticas a si fueran
+// todas. Se simula aquí porque sin esto una consulta sin paginar pasa los tests
+// y trunca en producción, que es justo el fallo que `paginar()` viene a evitar.
+const MAX_FILAS = 1000;
+
 const UNIQUE: Record<string, string[][]> = {
   produccion_leche: [['animal_id', 'fecha', 'ordeno']],       // uq_leche_animal_fecha_ordeno
   controles_leche: [['finca_id', 'fecha', 'ordeno']],         // uq_control_finca_fecha_ordeno
@@ -130,6 +136,7 @@ class Builder implements PromiseLike<Result> {
   private ranges: RangeFilter[] = [];
   private orderBy: { column: string; ascending: boolean }[] = [];
   private max: number | null = null;
+  private ventana: [number, number] | null = null;
   private op: 'select' | 'insert' | 'update' | 'upsert' | 'delete' = 'select';
   private payload: Row[] = [];
   private shape: 'list' | 'one' | 'maybe' = 'list';
@@ -149,14 +156,14 @@ class Builder implements PromiseLike<Result> {
 
   // ISO date strings compare correctly with the relational operators, which is
   // all these are used for (date windows).
-  gte(column: string, value: any): this { return this.range('gte', column, value); }
-  lte(column: string, value: any): this { return this.range('lte', column, value); }
-  gt(column: string, value: any): this { return this.range('gt', column, value); }
-  lt(column: string, value: any): this { return this.range('lt', column, value); }
+  gte(column: string, value: any): this { return this.filtroRango('gte', column, value); }
+  lte(column: string, value: any): this { return this.filtroRango('lte', column, value); }
+  gt(column: string, value: any): this { return this.filtroRango('gt', column, value); }
+  lt(column: string, value: any): this { return this.filtroRango('lt', column, value); }
 
   /** Bulk membership, as the milk-control lookup uses to resolve many aretes at once. */
   in(column: string, values: any[]): this {
-    return this.range('in', column, values);
+    return this.filtroRango('in', column, values);
   }
 
   /** Only the `.not(col, 'is', null)` form the alert queries use is supported. */
@@ -164,10 +171,10 @@ class Builder implements PromiseLike<Result> {
     if (operator !== 'is' || value !== null) {
       throw new Error(`fake-supabase: not(${operator}) no está soportado; agrégalo si lo necesitas`);
     }
-    return this.range('notNull', column, null);
+    return this.filtroRango('notNull', column, null);
   }
 
-  private range(op: RangeFilter['op'], column: string, value: any): this {
+  private filtroRango(op: RangeFilter['op'], column: string, value: any): this {
     this.ranges.push({ op, column, value });
     return this;
   }
@@ -179,6 +186,19 @@ class Builder implements PromiseLike<Result> {
 
   limit(n: number): this {
     this.max = n;
+    return this;
+  }
+
+  /**
+   * `range(desde, hasta)` de PostgREST, ambos inclusive.
+   *
+   * Se recorta de verdad, no se ignora: `paginar()` en src/lib/supabase.ts pide
+   * otra página según CUÁNTAS filas volvieron, así que un fake que devolviera
+   * siempre la tabla entera dejaría el bucle de paginación sin ejercer — y ese
+   * bucle existe porque PostgREST trunca en silencio.
+   */
+  range(desde: number, hasta: number): this {
+    this.ventana = [desde, hasta];
     return this;
   }
 
@@ -320,7 +340,9 @@ class Builder implements PromiseLike<Result> {
         return (a < b ? -1 : 1) * (ascending ? 1 : -1);
       });
     }
-    return this.max === null ? out : out.slice(0, this.max);
+    const ventana = this.ventana ? out.slice(this.ventana[0], this.ventana[1] + 1) : out;
+    const limitado = this.max === null ? ventana : ventana.slice(0, this.max);
+    return limitado.slice(0, MAX_FILAS);
   }
 
   private wrap(list: Row[]): Result {
