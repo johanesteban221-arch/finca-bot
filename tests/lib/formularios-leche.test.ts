@@ -280,6 +280,36 @@ describe('control lechero — pantalla', () => {
     expect(await render({ ordeno: 'tarde' })).not.toContain('ya está registrado');
   });
 
+  // El total en vivo. Se pinta con un <script> inline, no con un componente de
+  // cliente: si alguien lo "moderniza" a 'use client', el formulario deja de
+  // enviarse hasta que cargue el bundle — y esta pantalla se llena en el corral
+  // con mala señal. Estas tres aserciones son lo que hace ruidoso ese cambio.
+  it('la barra fija trae el total en vivo, arrancando en «—» y no en 0', async () => {
+    const html = await render();
+
+    expect(html).toContain('id="total-litros"');
+    expect(html).toContain('id="total-vacas"');
+    // Un 0 con las casillas vacías sería una cifra falsa.
+    expect(html).toMatch(/id="total-litros"[^>]*>—</);
+    expect(html).toMatch(/de \d+ vacas/);
+  });
+
+  it('el total lo suma un script inline sobre el <form>, sin React', async () => {
+    const html = await render();
+
+    expect(html).toContain('id="form-ordeno"');
+    expect(html).toContain("getElementById('form-ordeno')");
+    expect(html).toContain('addEventListener');
+  });
+
+  it('sin vacas en ordeño no hay barra ni script que sumar', async () => {
+    db.rows('animales').length = 0;
+    const html = await render();
+
+    expect(html).not.toContain('id="total-litros"');
+    expect(html).not.toContain('Guardar ordeño');
+  });
+
   it('sin sesión no se pinta ni un arete del hato', async () => {
     sinSesion('anonimo');
     const html = await render();

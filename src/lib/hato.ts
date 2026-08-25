@@ -96,8 +96,11 @@ export type ControlReciente = {
  * una mano; lo que necesita ver al terminar no es un aviso verde que dice
  * "guardado", es la fila con su nombre, la hora y el total — que es lo que le
  * permite darse cuenta de que guardó la tarde cuando quería guardar la mañana.
+ *
+ * Ocho y no seis: se ordeña dos veces al día, así que seis filas eran tres días
+ * de historial — muy poco para notar el ordeño que se quedó sin registrar.
  */
-export async function ultimosControles(limite = 6): Promise<ControlReciente[]> {
+export async function ultimosControles(limite = 8): Promise<ControlReciente[]> {
   const res = await supabase
     .from('controles_leche')
     .select('id, fecha, ordeno, medido_por, created_at')

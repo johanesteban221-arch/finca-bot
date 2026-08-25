@@ -11,7 +11,10 @@
 // control por finca, fecha Y ordeño — db/05).
 //
 // Sin JS de cliente: es un <form> normal, así que se envía aunque el bundle no
-// haya cargado. La barra de guardar es CSS `sticky`, no JavaScript.
+// haya cargado. La barra de guardar es CSS `fixed`, no JavaScript. La única
+// excepción es el <script> inline que suma el total en vivo: no es React, no
+// entra al bundle y no hace falta para guardar — si no corre, el número se
+// queda en «—» y el formulario funciona igual.
 
 import { getSesion } from '@/lib/auth/server';
 import { puede } from '@/lib/auth/roles';
@@ -26,6 +29,37 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const esOrdeno = (v: unknown): v is Ordeno => v === 'manana' || v === 'tarde';
+
+// Total en vivo. Vanilla y en un <script> suelto, NO un componente de cliente:
+// el formulario sigue siendo HTML puro y se envía aunque el bundle nunca cargue
+// — si esto no corre, lo único que falta es el número.
+//
+// Suma solo las casillas con algo escrito, así que el contador de vacas es
+// también un detector: un `type="number"` con coma llega vacío al servidor en
+// varios navegadores, y ahí se ve como «39 de 40» antes de guardar.
+const TOTAL_EN_VIVO = `(function () {
+  var f = document.getElementById('form-ordeno');
+  if (!f) return;
+  var salidaLitros = document.getElementById('total-litros');
+  var salidaVacas = document.getElementById('total-vacas');
+  if (!salidaLitros || !salidaVacas) return;
+  function sumar() {
+    var campos = f.querySelectorAll('input[name^="l:"]');
+    var total = 0, llenas = 0;
+    for (var i = 0; i < campos.length; i++) {
+      var crudo = String(campos[i].value).trim();
+      if (crudo === '') continue;
+      var n = parseFloat(crudo.replace(',', '.'));
+      if (isNaN(n)) continue;
+      llenas++;
+      total += n;
+    }
+    salidaLitros.textContent = llenas ? String(Math.round(total * 10) / 10) : '—';
+    salidaVacas.textContent = String(llenas);
+  }
+  f.addEventListener('input', sumar);
+  sumar();
+})();`;
 
 export default async function ControlLeche({
   searchParams,
@@ -111,7 +145,7 @@ export default async function ControlLeche({
           Un <details> cerrado igual envía sus controles, así que un hidden aquí
           arriba sería un segundo `fecha` y formData.get() se quedaría con este,
           ignorando lo que el operario cambiara. */}
-      <form action={registrarControlAction}>
+      <form id="form-ordeno" action={registrarControlAction}>
         {/* Selector de ordeño: enlaces, no radios, para que cambiarlo recargue la
             pantalla y el historial de arriba se filtre solo. Sin JS de cliente. */}
         <div className="mb-4 flex items-center gap-2">
@@ -203,16 +237,29 @@ export default async function ControlLeche({
 
         {/* Barra fija: con cuarenta vacas, un botón al final de la lista obliga a
             recorrerla entera para guardar. */}
-        {!!vacas?.length && (
-          <div className="fixed inset-x-0 bottom-0 z-30 border-t border-tierra-200 bg-white/95 px-4 py-3 shadow-[0_-2px_8px_rgba(0,0,0,0.06)] backdrop-blur">
-            <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
-              <span className="text-xs leading-snug text-tierra-500">
-                {ORDENO_LABEL[ordeno]} · {fecha}
-                <span className="block">Registra: {sesion.usuario.nombre}</span>
-              </span>
-              <Boton className="px-6 py-3 text-base">Guardar ordeño</Boton>
+        {vacas && vacas.length > 0 && (
+          <>
+            <div className="fixed inset-x-0 bottom-0 z-30 border-t border-tierra-200 bg-white/95 px-4 py-3 shadow-[0_-2px_8px_rgba(0,0,0,0.06)] backdrop-blur">
+              <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
+                <div className="min-w-0">
+                  {/* Arranca en «—», no en «0 L»: mientras no haya nada tecleado,
+                      un cero es una cifra falsa. */}
+                  <p className="text-lg font-semibold leading-tight tabular-nums text-tierra-900">
+                    <span id="total-litros">—</span> L
+                    <span className="ml-2 text-xs font-normal tabular-nums text-tierra-500">
+                      <span id="total-vacas">0</span> de {vacas.length} vacas
+                    </span>
+                  </p>
+                  <p className="truncate text-xs leading-snug text-tierra-500">
+                    {ORDENO_LABEL[ordeno]} · {fecha} · registra {sesion.usuario.nombre}
+                  </p>
+                </div>
+                <Boton className="shrink-0 px-6 py-3 text-base">Guardar ordeño</Boton>
+              </div>
             </div>
-          </div>
+
+            <script dangerouslySetInnerHTML={{ __html: TOTAL_EN_VIVO }} />
+          </>
         )}
       </form>
     </div>
